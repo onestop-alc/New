@@ -50,14 +50,20 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
         p_deaths: input.deaths,
         p_injuries: input.injuries,
         p_source: input.source,
+        p_source_key: input.source_key,
+        p_aggregator: input.aggregator,
         p_title: input.title,
+        p_title_key: input.title_key,
         p_url: input.url,
         p_summary: input.summary,
         p_confidence: input.confidence,
         p_published: input.published.toISOString()
       });
       fail('ingestArticle', error);
-      return data as number;
+      // A table-returning function comes back as an array of rows.
+      const row = (Array.isArray(data) ? data[0] : data) as
+        { story_id: number; inserted: boolean } | null;
+      return { storyId: Number(row?.story_id ?? 0), inserted: Boolean(row?.inserted) };
     },
 
     async startRun() {

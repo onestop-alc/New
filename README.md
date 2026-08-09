@@ -78,3 +78,15 @@ curl -X POST "https://fhuwoswahypqpxnafemy.supabase.co/functions/v1/ingest?wait=
 | `0005_ingest_rpc.sql` | `filter_new_urls`, `ingest_article` (atomic), ตาราง `ingest_runs`, `max_confidence` |
 | `0006_cron.sql` | pg_cron ทุก 30 นาที + job กวาด run ที่ค้าง |
 | `0007_service_role_grants.sql` | สิทธิ์ตารางให้ service_role (RLS ข้ามได้ แต่ table grant ไม่ข้าม) |
+| `0008_ingest_dedup_fixes.sql` | นับสำนักข่าวแบบ case-insensitive + จับคู่ story ด้วย `norm_title` |
+| `0009_source_identity.sql` | `source_key` / `title_key` / `aggregator` + สูตรนับเฉพาะสำนักข่าวอิสระ |
+| `0010_ingest_reports_inserted.sql` | RPC บอกกลับว่าเขียนแถวจริงหรือไม่ (log จะได้ไม่รายงานเกินจริง) |
+
+### การนับ "สำนักข่าว"
+
+สำนักเดียวกันมาได้สองรูปแบบ — Bing ให้ hostname (`thebangkokinsight.com`) ส่วน Google ให้ชื่อแสดงผล
+(`The Bangkok Insight`, `ข่าวสด`) [_shared/sources.ts](supabase/functions/_shared/sources.ts) จึงยุบทั้งสองแบบเป็น key เดียว
+และติดธง `aggregator` ให้เว็บที่เผยแพร่ต่อ (msn, LINE Today, TrueID, sanook, kapook) ซึ่งไม่นับเป็นการยืนยันอิสระ
+
+`source_count` = จำนวน `source_key` ที่ไม่ใช่ aggregator (อย่างน้อย 1) และ unique index
+`(story_id, title_key)` กันไม่ให้ข่าวชิ้นเดียวถูกเก็บซ้ำเมื่อมาคนละ URL

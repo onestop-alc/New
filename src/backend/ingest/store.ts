@@ -22,7 +22,10 @@ function ingestArgs(input: IngestInput) {
     input.deaths,
     input.injuries,
     input.source,
+    input.source_key,
+    input.aggregator,
     input.title,
+    input.title_key,
     input.url,
     input.summary,
     input.confidence,
@@ -58,11 +61,12 @@ function createPostgresStore(connectionString: string): Store {
     },
 
     async ingestArticle(input) {
-      const { rows } = await pool.query<{ ingest_article: number }>(
-        `SELECT ingest_article($1, $2, $3, $4, $5::text[], $6, $7, $8, $9, $10, $11, $12, $13)`,
+      const { rows } = await pool.query<{ story_id: string; inserted: boolean }>(
+        `SELECT story_id, inserted
+           FROM ingest_article($1, $2, $3, $4, $5::text[], $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
         ingestArgs(input)
       );
-      return rows[0].ingest_article;
+      return { storyId: Number(rows[0].story_id), inserted: rows[0].inserted };
     },
 
     async startRun() {

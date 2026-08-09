@@ -15,6 +15,7 @@ import {
   isSameStory
 } from './dedup.ts';
 import { CONFIG } from './feeds.ts';
+import { canonicalSource } from './sources.ts';
 
 export interface ArticleInput {
   title: string;
@@ -43,7 +44,13 @@ export interface IngestInput {
   deaths: number | null;
   injuries: number | null;
   source: string;
+  /** Stable outlet key — see canonicalSource() in sources.ts. */
+  source_key: string;
+  /** True when the outlet only republishes; excluded from source_count. */
+  aggregator: boolean;
   title: string;
+  /** normalizeForMatch(title): catches the same article under another URL. */
+  title_key: string;
   url: string;
   summary: string;
   confidence: string;
@@ -65,8 +72,11 @@ export interface Store {
   /** Returns only the URLs not already stored — one round trip for the batch. */
   filterNewUrls(urls: string[]): Promise<Set<string>>;
   findCandidates(trgmKey: string, windowStart: Date): Promise<CandidateStory[]>;
-  /** Atomic + idempotent: see ingest_article() in 0005_ingest_rpc.sql. */
-  ingestArticle(input: IngestInput): Promise<number>;
+  /**
+   * Atomic + idempotent (see ingest_article()). `inserted` is false when the
+   * article was already stored, possibly under a different URL.
+   */
+  ingestArticle(input: IngestInput): Promise<{ storyId: number; inserted: boolean }>;
   startRun(): Promise<number>;
   finishRun(runId: number, status: 'ok' | 'error', counters: RunCounters): Promise<void>;
 }
@@ -218,8 +228,9 @@ export async function runPipeline(
       try {
         const facts = extractFacts(article);
         const storyId = await findMatchingStory(store, article, facts);
+        const outlet = canonicalSource(article.source);
 
-        await store.ingestArticle({
+        const outcome = await store.ingestArticle({
           storyId,
           display_title: article.title,
           norm_title: normalizeTitle(article.title),
@@ -228,14 +239,18 @@ export async function runPipeline(
           deaths: facts.deaths,
           injuries: facts.injuries,
           source: article.source,
+          source_key: outlet.key,
+          aggregator: outlet.aggregator,
           title: article.title,
+          title_key: normalizeForMatch(article.title),
           url: article.link,
           summary: article.summary,
           confidence: article.confidence,
           published: article.pubDate
         });
 
-        if (storyId) result.merged++;
+        if (!outcome.inserted) result.skipped++;      // same article, other URL
+        else if (storyId) result.merged++;
         else result.newStories++;
       } catch (err) {
         result.errors++;
