@@ -1,5 +1,6 @@
 import { Link, useLocation } from 'react-router-dom';
-import { AlertTriangle, Map, List, Activity } from 'lucide-react';
+import { AlertTriangle, Map, List } from 'lucide-react';
+import LastUpdated from './LastUpdated.js';
 
 export default function Navigation() {
   const location = useLocation();
@@ -39,10 +40,7 @@ export default function Navigation() {
             </Link>
           );
         })}
-        <div className="px-4 py-2 bg-red-600 rounded-lg text-xs font-bold text-white shadow-md flex items-center gap-1.5 ml-2">
-          <Activity className="h-4 w-4" />
-          LIVE FEED
-        </div>
+        <LastUpdated variant="compact" />
       </div>
     </header>
   );

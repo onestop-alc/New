@@ -35,6 +35,43 @@ export interface Article {
 
 export type StoryWithArticles = Story & { articles: Article[] };
 
+export interface LastRun {
+  /** When the ingestion finished — how fresh the data on screen actually is. */
+  finishedAt: Date;
+  fetched: number | null;
+  newStories: number | null;
+}
+
+/**
+ * The most recent successful ingestion. ingest_runs is readable by anon
+ * (0005_ingest_rpc.sql), so the page can show its own freshness.
+ */
+export async function fetchLastRun(): Promise<LastRun | null> {
+  const { data, error } = await supabase
+    .from('ingest_runs')
+    .select('started_at, finished_at, fetched, new_stories')
+    .eq('status', 'ok')
+    .order('finished_at', { ascending: false, nullsFirst: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw new Error(error.message);
+  if (!data) return null;
+
+  const row = data as {
+    started_at: string;
+    finished_at: string | null;
+    fetched: number | null;
+    new_stories: number | null;
+  };
+
+  return {
+    finishedAt: new Date(row.finished_at ?? row.started_at),
+    fetched: row.fetched,
+    newStories: row.new_stories
+  };
+}
+
 export async function fetchStories(limit = 100): Promise<Story[]> {
   // Ordered by last_published, not first_published: Google News hands us
   // articles whose publication date is weeks old, so a story discovered today
