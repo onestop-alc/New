@@ -1,6 +1,6 @@
 {
-  "name": "",
-  "description": "",
+  "name": "DrunkDrive.th",
+  "description": "ระบบรวมข่าวอุบัติเหตุเมาแล้วขับและด่านตรวจแอลกอฮอล์ในประเทศไทย",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": []
 }

@@ -1,7 +1,8 @@
 {
-  "name": "react-example",
+  "name": "drunkdrive-th",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "description": "ระบบรวมข่าวอุบัติเหตุเมาแล้วขับและด่านตรวจแอลกอฮอล์ในประเทศไทย",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
@@ -13,7 +14,6 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
-    "@google/genai": "^2.4.0",
     "@supabase/supabase-js": "^2.112.2",
     "@tailwindcss/vite": "^4.1.14",
     "@vitejs/plugin-react": "^5.0.4",
