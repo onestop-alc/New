@@ -26,5 +26,12 @@
     },
     "allowImportingTsExtensions": true,
     "noEmit": true
-  }
+  },
+  // Deno-only sources: they use Deno globals and npm: import specifiers that
+  // the Node type-checker cannot resolve. Deno checks them at deploy time.
+  "exclude": [
+    "supabase/functions/ingest",
+    "node_modules",
+    "dist"
+  ]
 }

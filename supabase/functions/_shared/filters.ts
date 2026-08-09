@@ -14,7 +14,7 @@ import {
   EVERGREEN_MARKERS,
   SOFT_SOURCE_BLOCK,
   HARD_SOURCE_BLOCK
-} from './feeds.js';
+} from './feeds.ts';
 
 export interface FilterResult {
   passed: boolean;

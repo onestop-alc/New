@@ -1,5 +1,5 @@
 import { stringSimilarity } from 'string-similarity-js';
-import { SYNONYMS, FILLER, PROVINCES, CONFIG } from './feeds.js';
+import { SYNONYMS, FILLER, PROVINCES, AREA_ALIASES, CONFIG } from './feeds.ts';
 
 export function normalizeTitle(title: string): string {
   let normalized = title;
@@ -41,9 +41,11 @@ const THAI_NUMBERS: Record<string, number> = {
  * resolves. The regex is scanned globally so an early non-numeric match does
  * not shadow a later real one.
  */
-function extractCount(title: string, keywords: string[]): number | null {
+function extractCount(title: string, keywords: string[], modifiers: string[] = []): number | null {
+  // Optional modifier between the keyword and the number: "ดับคาที่ 3 ศพ".
+  const modifier = modifiers.length ? `(?:${modifiers.join('|')})?` : '';
   const pattern = new RegExp(
-    `(?:${keywords.join('|')})\\s*(\\d+|${THAI_NUMBER_WORDS.join('|')})(?![ก-๙])`,
+    `(?:${keywords.join('|')})${modifier}\\s*(\\d+|${THAI_NUMBER_WORDS.join('|')})(?![ก-๙])`,
     'g'
   );
   for (const match of title.matchAll(pattern)) {
@@ -54,16 +56,21 @@ function extractCount(title: string, keywords: string[]): number | null {
   return null;
 }
 
+const DEATH_MODIFIERS = ['คาที่', 'สลด', 'อนาถ', 'ยกครัว', 'ทันที'];
+
 export function extractDeaths(title: string): number | null {
-  const count = extractCount(title, ['ดับ', 'เสียชีวิต', 'ตาย']);
+  const count = extractCount(title, ['ดับ', 'เสียชีวิต', 'ตาย'], DEATH_MODIFIERS);
   if (count !== null) return count;
-  // "ดับคาที่" / "ดับสลด" without a number implies a single fatality.
-  if (/ดับคาที่|ดับสลด|เสียชีวิตคาที่/.test(title)) return 1;
+  // "ดับ 3 ศพ" is usually phrased with the count first: "... 3 ศพ".
+  const bodies = title.match(/(\d+)\s*ศพ(?![ก-๙])/);
+  if (bodies) return parseInt(bodies[1], 10);
+  // "ดับคาที่" / "ดับสลด" with no number at all implies a single fatality.
+  if (/ดับคาที่|ดับสลด|เสียชีวิตคาที่|ดับอนาถ/.test(title)) return 1;
   return null;
 }
 
 export function extractInjuries(title: string): number | null {
-  const count = extractCount(title, ['บาดเจ็บ', 'สาหัส', 'เจ็บ']);
+  const count = extractCount(title, ['บาดเจ็บ', 'สาหัส', 'เจ็บ'], ['สาหัส', 'หนัก']);
   if (count !== null) return count;
   if (/บาดเจ็บสาหัส|อาการสาหัส|โคม่า/.test(title)) return 1;
   return null;
@@ -71,6 +78,11 @@ export function extractInjuries(title: string): number | null {
 
 export function extractProvinces(text: string): string[] {
   const found = new Set<string>();
+
+  for (const [area, province] of Object.entries(AREA_ALIASES)) {
+    if (text.includes(area)) found.add(province);
+  }
+
   for (const province of PROVINCES) {
     if (text.includes(province)) {
       if (province === 'กทม' || province === 'กทม.') {

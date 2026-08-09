@@ -13,19 +13,19 @@ const PORT = 3000;
 
 // --- Vite Middleware ---
 async function startServer() {
-  // Start the background cron job (runs every 30 mins).
-  // Writing needs either a direct Postgres URL or the Supabase service_role key.
+  // Ingestion runs in Supabase (Edge Function + pg_cron every 30 minutes), so
+  // the dev server does NOT schedule it: two schedulers would double the feed
+  // traffic and race each other. Set LOCAL_INGEST_CRON=1 to run it here
+  // instead — e.g. while the cloud function is being reworked.
   const canIngest = Boolean(process.env.DATABASE_URL || process.env.SUPABASE_SERVICE_ROLE_KEY);
-  if (canIngest) {
+  if (process.env.LOCAL_INGEST_CRON === '1' && canIngest) {
+    console.log('LOCAL_INGEST_CRON=1: running ingestion locally every 30 minutes.');
     cron.schedule('*/30 * * * *', () => {
       runIngestion().catch(console.error);
     });
-    // Run once on startup
     setTimeout(() => {
       runIngestion().catch(console.error);
     }, 5000);
-  } else {
-    console.warn("WARNING: no DATABASE_URL / SUPABASE_SERVICE_ROLE_KEY. Ingestion is disabled.");
   }
 
   if (process.env.NODE_ENV !== 'production') {

@@ -1,0 +1,12 @@
+project_id = "fhuwoswahypqpxnafemy"
+
+[functions.ingest]
+# Auth is the x-ingest-secret header, not the JWT gate: verify_jwt would accept
+# the anon key, which is public in the browser bundle.
+verify_jwt = false
+entrypoint = "./functions/ingest/index.ts"
+
+[edge_runtime]
+# Local `functions serve` only: without per_worker the worker is killed as soon
+# as the response is sent and EdgeRuntime.waitUntil work is lost.
+policy = "per_worker"

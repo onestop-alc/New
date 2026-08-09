@@ -24,16 +24,44 @@ export const GOOGLE_NEWS_QUERIES_SEASONAL = [
   "ไม่ยอมเป่า OR ปฏิเสธเป่า แอลกอฮอล์"
 ];
 
-// Whole-site Thai feeds are general-news firehoses: 0 of 502 items across the
-// 13 feeds that still respond passed the filter, and Google News already
-// indexes every one of those outlets. Left empty on purpose.
-// Working URLs, if this is ever revisited (measured item counts):
-//   https://www.thairath.co.th/rss/news (20), https://www.khaosod.co.th/feed (50,
-//   browser UA required — /rss is Cloudflare-blocked), https://www.matichon.co.th/feed (50),
-//   https://www.matichon.co.th/local/crime/feed (50), https://www.prachachat.net/feed (30),
-//   https://www.dailynews.co.th/news_group/crime/feed/ (12), https://www.amarintv.com/rss/news (20).
-// Dead: khaosod /rss (403), dailynews /feed/ (200 but zero items), siamrath /rss (HTML).
-export const DIRECT_FEEDS: string[] = [];
+// Bing News RSS is the search source that works from Supabase's egress IPs:
+// Google News answers 503 to every request from the Edge runtime (verified from
+// the deployed function — browser UA, no UA, and an English query all fail),
+// while Bing returns 200. Bing does NOT understand the `OR` syntax — the
+// OR-style queries above return zero items — so it gets its own simple terms.
+// Measured 2026-08-09 from Bing: 72 unique articles, 63 passing the filter.
+export const BING_NEWS_QUERIES = [
+  "เมาแล้วขับ",      // 9 items
+  "เมาขับ",          // 10
+  "ดื่มแล้วขับ",       // 8
+  "เป่าแอลกอฮอล์",    // 10
+  "ตรวจวัดแอลกอฮอล์", // 8
+  "ด่านตรวจแอลกอฮอล์", // 8
+  "เมาแล้วขับ ชน",    // 11
+  "เมาแล้วขับ จับ"     // 8
+];
+
+export const BING_NEWS_QUERIES_SEASONAL = [
+  "เมาแล้วขับ สงกรานต์",
+  "เมาแล้วขับ ปีใหม่",
+  "คุมประพฤติ เมาแล้วขับ",
+  "ริบรถ เมาแล้วขับ"
+];
+
+// Whole-site Thai feeds contributed 0 of 502 relevant items when measured, so
+// they are a backstop rather than a primary source — but they are the only
+// source that keeps working if a search engine starts blocking us, and all of
+// these respond from the Edge runtime as well as locally.
+// Excluded: khaosod /rss (Cloudflare 403), dailynews /news_group/crime/feed/
+// (200 locally, 403 from the Edge runtime), dailynews /feed/ (200, zero items),
+// siamrath /rss (returns HTML).
+export const DIRECT_FEEDS: string[] = [
+  "https://www.thairath.co.th/rss/news",
+  "https://www.khaosod.co.th/feed",
+  "https://www.matichon.co.th/local/crime/feed",
+  "https://www.prachachat.net/feed",
+  "https://www.amarintv.com/rss/news"
+];
 
 // ---------------------------------------------------------------------------
 // Classification vocabulary.
@@ -191,6 +219,41 @@ export const PROVINCES = [
   // Common names
   "กทม", "กทม.", "โคราช", "พัทยา", "หาดใหญ่"
 ];
+
+/**
+ * Areas that identify a province without naming it. Thai crime headlines
+ * usually name a district or landmark, not the province.
+ * "สน." (metropolitan police station) only exists in Bangkok, which makes it a
+ * reliable marker on its own.
+ */
+export const AREA_ALIASES: Record<string, string> = {
+  "สน.": "กรุงเทพมหานคร",
+  "ทองหล่อ": "กรุงเทพมหานคร",
+  "ลาดพร้าว": "กรุงเทพมหานคร",
+  "รามคำแหง": "กรุงเทพมหานคร",
+  "บางนา": "กรุงเทพมหานคร",
+  "ดินแดง": "กรุงเทพมหานคร",
+  "สุขุมวิท": "กรุงเทพมหานคร",
+  "รัชดา": "กรุงเทพมหานคร",
+  "พระราม 2": "กรุงเทพมหานคร",
+  "วิภาวดี": "กรุงเทพมหานคร",
+  "กล้วยน้ำไท": "กรุงเทพมหานคร",
+  "บางบัวทอง": "นนทบุรี",
+  "ปากเกร็ด": "นนทบุรี",
+  "รังสิต": "ปทุมธานี",
+  "ลำลูกกา": "ปทุมธานี",
+  "ศรีราชา": "ชลบุรี",
+  "บางแสน": "ชลบุรี",
+  "แหลมฉบัง": "ชลบุรี",
+  "หัวหิน": "ประจวบคีรีขันธ์",
+  "ปากช่อง": "นครราชสีมา",
+  "แม่สอด": "ตาก",
+  "เบตง": "ยะลา",
+  "สมุย": "สุราษฎร์ธานี",
+  "ป่าตอง": "ภูเก็ต",
+  "สุวรรณภูมิ": "สมุทรปราการ",
+  "ดอนเมือง": "กรุงเทพมหานคร"
+};
 
 export const CONFIG = {
   SIMILARITY_THRESHOLD: 0.35,

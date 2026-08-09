@@ -1,5 +1,13 @@
 import Parser from 'rss-parser';
-import { GOOGLE_NEWS_QUERIES, GOOGLE_NEWS_QUERIES_SEASONAL, DIRECT_FEEDS, CONFIG } from './feeds.js';
+import {
+  GOOGLE_NEWS_QUERIES,
+  GOOGLE_NEWS_QUERIES_SEASONAL,
+  BING_NEWS_QUERIES,
+  BING_NEWS_QUERIES_SEASONAL,
+  DIRECT_FEEDS,
+  CONFIG
+} from '../../../supabase/functions/_shared/feeds.ts';
+import type { ArticleInput } from '../../../supabase/functions/_shared/pipeline.ts';
 import sanitizeHtml from 'sanitize-html';
 
 type GoogleNewsItem = { sourceName?: string | { '#text'?: string } };
@@ -18,13 +26,7 @@ const parser: Parser<Record<string, unknown>, GoogleNewsItem> = new Parser({
   customFields: { item: [['source', 'sourceName']] }
 });
 
-export interface ArticleInput {
-  title: string;
-  link: string;
-  pubDate: Date;
-  source: string;
-  summary: string;
-}
+export type { ArticleInput };
 
 function cleanHtml(html: string | undefined): string {
   if (!html) return '';
@@ -38,6 +40,30 @@ function parseDate(item: { isoDate?: string; pubDate?: string }): Date | null {
   if (!raw) return null;
   const date = new Date(raw);
   return Number.isNaN(date.getTime()) ? null : date;
+}
+
+/**
+ * Bing RSS links are click-tracking URLs (bing.com/news/apiclick.aspx?...&url=…)
+ * whose tracking ids change every request. Left as-is they defeat URL dedup and
+ * make every outlet look like "bing.com", so unwrap the real publisher URL.
+ */
+export function unwrapBingLink(link: string): string {
+  try {
+    const parsed = new URL(link);
+    if (!parsed.hostname.endsWith('bing.com')) return link;
+    return parsed.searchParams.get('url') || link;
+  } catch {
+    return link;
+  }
+}
+
+/** Bing RSS carries no <source>; the publisher hostname is the next best key. */
+function sourceFromUrl(link: string): string {
+  try {
+    return new URL(link).hostname.replace(/^www\./, '');
+  } catch {
+    return 'Bing News';
+  }
 }
 
 function isTooOld(date: Date): boolean {
@@ -91,6 +117,39 @@ export async function fetchGoogleNews(queries: string[] = GOOGLE_NEWS_QUERIES): 
   return articles;
 }
 
+/** Bing keeps working from datacenter IPs, where Google News answers 503. */
+export async function fetchBingNews(queries: string[] = BING_NEWS_QUERIES): Promise<ArticleInput[]> {
+  const articles: ArticleInput[] = [];
+
+  const requests = queries.map(async (query) => {
+    try {
+      const url =
+        `https://www.bing.com/news/search?q=${encodeURIComponent(query)}&format=RSS&cc=TH&setlang=th`;
+      const feed = await parser.parseURL(url);
+
+      for (const item of feed.items) {
+        if (!item.title || !item.link) continue;
+        const pubDate = parseDate(item);
+        if (!pubDate || isTooOld(pubDate)) continue;
+
+        const link = unwrapBingLink(item.link);
+        articles.push({
+          title: item.title.trim(),
+          link,
+          pubDate,
+          source: sourceFromUrl(link),
+          summary: cleanHtml(item.contentSnippet || item.content || item.summary)
+        });
+      }
+    } catch (e) {
+      console.error(`Failed to fetch Bing News for query ${query}:`, e);
+    }
+  });
+
+  await Promise.allSettled(requests);
+  return articles;
+}
+
 export async function fetchDirectFeeds(): Promise<ArticleInput[]> {
   const articles: ArticleInput[] = [];
 
@@ -121,12 +180,16 @@ export async function fetchDirectFeeds(): Promise<ArticleInput[]> {
 }
 
 export async function fetchAllFeeds(options: { seasonal?: boolean } = {}): Promise<ArticleInput[]> {
-  const queries = options.seasonal
+  const googleQueries = options.seasonal
     ? [...GOOGLE_NEWS_QUERIES, ...GOOGLE_NEWS_QUERIES_SEASONAL]
     : GOOGLE_NEWS_QUERIES;
+  const bingQueries = options.seasonal
+    ? [...BING_NEWS_QUERIES, ...BING_NEWS_QUERIES_SEASONAL]
+    : BING_NEWS_QUERIES;
 
-  const [googleNews, direct] = await Promise.all([
-    fetchGoogleNews(queries),
+  const [googleNews, bingNews, direct] = await Promise.all([
+    fetchGoogleNews(googleQueries),
+    fetchBingNews(bingQueries),
     fetchDirectFeeds()
   ]);
 
@@ -134,7 +197,7 @@ export async function fetchAllFeeds(options: { seasonal?: boolean } = {}): Promi
   const seenUrls = new Set<string>();
   const unique: ArticleInput[] = [];
 
-  for (const article of [...googleNews, ...direct]) {
+  for (const article of [...googleNews, ...bingNews, ...direct]) {
     if (!seenUrls.has(article.link)) {
       seenUrls.add(article.link);
       unique.push(article);

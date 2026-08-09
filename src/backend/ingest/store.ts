@@ -1,63 +1,16 @@
 import { Pool } from 'pg';
-import { createClient, type SupabaseClient } from '@supabase/supabase-js';
-import { CONFIG } from './feeds.js';
+import { createSupabaseStore } from '../../../supabase/functions/_shared/store-supabase.ts';
+import { CONFIG } from '../../../supabase/functions/_shared/feeds.ts';
+import {
+  RunInProgressError,
+  UNIQUE_VIOLATION,
+  type CandidateStory,
+  type IngestInput,
+  type Store
+} from '../../../supabase/functions/_shared/pipeline.ts';
 
-export interface CandidateStory {
-  id: number;
-  display_title: string;
-  provinces: string[];
-  deaths: number | null;
-  injuries: number | null;
-}
-
-/** One article plus the story fields to use if it starts a new story. */
-export interface IngestInput {
-  /** Existing story to attach to, or null to create one. */
-  storyId: number | null;
-  display_title: string;
-  norm_title: string;
-  trgm_key: string;
-  provinces: string[];
-  deaths: number | null;
-  injuries: number | null;
-  source: string;
-  title: string;
-  url: string;
-  summary: string;
-  confidence: string;
-  published: Date;
-}
-
-export interface RunCounters {
-  fetched: number;
-  passed: number;
-  newStories: number;
-  merged: number;
-  skipped: number;
-  errors: number;
-  detail?: unknown;
-}
-
-/** Thrown when another ingestion run is already in flight. */
-export class RunInProgressError extends Error {
-  constructor() {
-    super('another ingestion run is already in progress');
-    this.name = 'RunInProgressError';
-  }
-}
-
-const UNIQUE_VIOLATION = '23505';
-
-export interface Store {
-  readonly kind: 'postgres' | 'supabase';
-  /** Returns only the URLs not already stored — one round trip for the batch. */
-  filterNewUrls(urls: string[]): Promise<Set<string>>;
-  findCandidates(trgmKey: string, windowStart: Date): Promise<CandidateStory[]>;
-  /** Atomic + idempotent: see ingest_article() in 0005_ingest_rpc.sql. */
-  ingestArticle(input: IngestInput): Promise<number>;
-  startRun(): Promise<number>;
-  finishRun(runId: number, status: 'ok' | 'error', counters: RunCounters): Promise<void>;
-}
+export { RunInProgressError };
+export type { Store };
 
 function ingestArgs(input: IngestInput) {
   return [
@@ -74,7 +27,7 @@ function ingestArgs(input: IngestInput) {
     input.summary,
     input.confidence,
     input.published
-  ] as const;
+  ];
 }
 
 /** Direct Postgres connection (DATABASE_URL). */
@@ -107,7 +60,7 @@ function createPostgresStore(connectionString: string): Store {
     async ingestArticle(input) {
       const { rows } = await pool.query<{ ingest_article: number }>(
         `SELECT ingest_article($1, $2, $3, $4, $5::text[], $6, $7, $8, $9, $10, $11, $12, $13)`,
-        [...ingestArgs(input)]
+        ingestArgs(input)
       );
       return rows[0].ingest_article;
     },
@@ -143,87 +96,6 @@ function createPostgresStore(connectionString: string): Store {
           runId
         ]
       );
-    }
-  };
-}
-
-/** Supabase REST with the service_role key (bypasses RLS). */
-function createSupabaseStore(url: string, serviceRoleKey: string): Store {
-  const client: SupabaseClient = createClient(url, serviceRoleKey, {
-    auth: { persistSession: false, autoRefreshToken: false }
-  });
-
-  const fail = (context: string, error: { message: string } | null) => {
-    if (error) throw new Error(`${context}: ${error.message}`);
-  };
-
-  return {
-    kind: 'supabase',
-
-    async filterNewUrls(urls) {
-      if (urls.length === 0) return new Set();
-      const { data, error } = await client.rpc('filter_new_urls', { urls });
-      fail('filterNewUrls', error);
-      return new Set((data ?? []) as string[]);
-    },
-
-    async findCandidates(trgmKey, windowStart) {
-      const { data, error } = await client.rpc('find_candidate_stories', {
-        search_key: trgmKey,
-        window_start: windowStart.toISOString(),
-        threshold: CONFIG.SIMILARITY_THRESHOLD
-      });
-      fail('findCandidates', error);
-      return (data ?? []) as CandidateStory[];
-    },
-
-    async ingestArticle(input) {
-      const { data, error } = await client.rpc('ingest_article', {
-        p_story_id: input.storyId,
-        p_display_title: input.display_title,
-        p_norm_title: input.norm_title,
-        p_trgm_key: input.trgm_key,
-        p_provinces: input.provinces,
-        p_deaths: input.deaths,
-        p_injuries: input.injuries,
-        p_source: input.source,
-        p_title: input.title,
-        p_url: input.url,
-        p_summary: input.summary,
-        p_confidence: input.confidence,
-        p_published: input.published.toISOString()
-      });
-      fail('ingestArticle', error);
-      return data as number;
-    },
-
-    async startRun() {
-      const { data, error } = await client
-        .from('ingest_runs')
-        .insert({ status: 'running' })
-        .select('id')
-        .single();
-      if (error?.code === UNIQUE_VIOLATION) throw new RunInProgressError();
-      fail('startRun', error);
-      return (data as { id: number }).id;
-    },
-
-    async finishRun(runId, status, counters) {
-      const { error } = await client
-        .from('ingest_runs')
-        .update({
-          status,
-          finished_at: new Date().toISOString(),
-          fetched: counters.fetched,
-          passed: counters.passed,
-          new_stories: counters.newStories,
-          merged: counters.merged,
-          skipped: counters.skipped,
-          errors: counters.errors,
-          detail: counters.detail ?? null
-        })
-        .eq('id', runId);
-      fail('finishRun', error);
     }
   };
 }
