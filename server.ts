@@ -6,6 +6,7 @@ import { runIngestion } from './src/backend/ingest/index.js';
 import { Pool } from 'pg';
 import dotenv from 'dotenv';
 
+dotenv.config({ path: '.env.local' });
 dotenv.config();
 
 const app = express();
@@ -57,8 +58,10 @@ app.get('/api/stories/:id', async (req, res) => {
 
 // --- Vite Middleware ---
 async function startServer() {
-  // Start the background cron job (runs every 30 mins)
-  if (process.env.DATABASE_URL) {
+  // Start the background cron job (runs every 30 mins).
+  // Writing needs either a direct Postgres URL or the Supabase service_role key.
+  const canIngest = Boolean(process.env.DATABASE_URL || process.env.SUPABASE_SERVICE_ROLE_KEY);
+  if (canIngest) {
     cron.schedule('*/30 * * * *', () => {
       runIngestion().catch(console.error);
     });
@@ -67,7 +70,7 @@ async function startServer() {
       runIngestion().catch(console.error);
     }, 5000);
   } else {
-    console.warn("WARNING: DATABASE_URL not set. Ingestion cron and APIs are disabled.");
+    console.warn("WARNING: no DATABASE_URL / SUPABASE_SERVICE_ROLE_KEY. Ingestion is disabled.");
   }
 
   if (process.env.NODE_ENV !== 'production') {

@@ -2,7 +2,16 @@ import Parser from 'rss-parser';
 import { GOOGLE_NEWS_QUERIES, DIRECT_FEEDS } from './feeds.js';
 import sanitizeHtml from 'sanitize-html';
 
-const parser = new Parser();
+// Several Thai news feeds stall instead of refusing the connection, so every
+// request needs a hard timeout or a single feed can hang the whole run.
+const parser = new Parser({
+  timeout: 15000,
+  headers: {
+    'User-Agent':
+      'Mozilla/5.0 (compatible; DrunkDrivingNewsBot/1.0; +https://github.com/)',
+    Accept: 'application/rss+xml, application/xml;q=0.9, */*;q=0.8'
+  }
+});
 
 export interface ArticleInput {
   title: string;
@@ -20,8 +29,8 @@ function cleanHtml(html: string | undefined): string {
 
 export async function fetchGoogleNews(): Promise<ArticleInput[]> {
   const articles: ArticleInput[] = [];
-  
-  for (const query of GOOGLE_NEWS_QUERIES) {
+
+  const queries = GOOGLE_NEWS_QUERIES.map(async (query) => {
     try {
       const url = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=th&gl=TH&ceid=TH:th`;
       const feed = await parser.parseURL(url);
