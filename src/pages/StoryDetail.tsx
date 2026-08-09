@@ -3,39 +3,18 @@ import { useParams, Link } from 'react-router-dom';
 import { format } from 'date-fns';
 import { th } from 'date-fns/locale';
 import { ArrowLeft, ExternalLink, MapPin, Skull, FileText, Activity, Clock } from 'lucide-react';
-
-interface Article {
-  id: string;
-  source: string;
-  title: string;
-  url: string;
-  summary: string;
-  published: string;
-  confidence: string;
-}
-
-interface StoryDetail {
-  id: string;
-  display_title: string;
-  provinces: string[];
-  deaths: number | null;
-  injuries: number | null;
-  first_published: string;
-  articles: Article[];
-}
+import { fetchStory, type StoryWithArticles } from '../lib/api.js';
 
 export default function StoryDetail() {
   const { id } = useParams();
-  const [story, setStory] = useState<StoryDetail | null>(null);
+  const [story, setStory] = useState<StoryWithArticles | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
   useEffect(() => {
-    fetch(`/api/stories/${id}`)
-      .then(res => {
-        if (!res.ok) throw new Error('Failed to fetch story details');
-        return res.json();
-      })
+    if (!id) return;
+    setLoading(true);
+    fetchStory(id)
       .then(data => {
         setStory(data);
         setLoading(false);

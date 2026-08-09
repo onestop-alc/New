@@ -3,16 +3,7 @@ import { Link } from 'react-router-dom';
 import { formatDistanceToNow } from 'date-fns';
 import { th } from 'date-fns/locale';
 import { AlertTriangle, Activity } from 'lucide-react';
-
-interface Story {
-  id: string;
-  display_title: string;
-  provinces: string[];
-  deaths: number | null;
-  injuries: number | null;
-  source_count: number;
-  first_published: string;
-}
+import { fetchStories, type Story } from '../lib/api.js';
 
 export default function Feed() {
   const [stories, setStories] = useState<Story[]>([]);
@@ -20,11 +11,7 @@ export default function Feed() {
   const [error, setError] = useState('');
 
   useEffect(() => {
-    fetch('/api/stories')
-      .then(res => {
-        if (!res.ok) throw new Error('Failed to fetch stories');
-        return res.json();
-      })
+    fetchStories()
       .then(data => {
         setStories(data);
         setLoading(false);
@@ -77,11 +64,11 @@ export default function Feed() {
   // Calculate overall stats for the widget
   const totalDeaths = stories.reduce((acc, curr) => acc + (curr.deaths || 0), 0);
   const totalInjuries = stories.reduce((acc, curr) => acc + (curr.injuries || 0), 0);
-  const topProvince = stories.map(s => s.provinces?.[0]).filter(Boolean).reduce((acc, curr) => {
-    if (!curr) return acc;
-    acc[curr] = (acc[curr] || 0) + 1;
-    return acc;
-  }, {} as Record<string, number>);
+  const topProvince: Record<string, number> = {};
+  for (const story of stories) {
+    const province = story.provinces?.[0];
+    if (province) topProvince[province] = (topProvince[province] || 0) + 1;
+  }
   const highestRiskArea = Object.entries(topProvince).sort((a, b) => b[1] - a[1])[0]?.[0] || 'ไม่ระบุ';
 
   return (

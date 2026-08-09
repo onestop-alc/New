@@ -1,20 +1,14 @@
 import { useState, useEffect } from 'react';
 import { Map, AlertTriangle } from 'lucide-react';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Cell } from 'recharts';
-
-interface Story {
-  id: string;
-  provinces: string[];
-  deaths: number | null;
-}
+import { fetchStories, type Story } from '../lib/api.js';
 
 export default function MapPage() {
   const [stories, setStories] = useState<Story[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch('/api/stories')
-      .then(res => res.json())
+    fetchStories()
       .then(data => {
         setStories(data);
         setLoading(false);
