@@ -1,18 +1,30 @@
 import { supabase } from './supabase.js';
 
 export interface Story {
-  id: string;
+  id: number;
   display_title: string;
-  provinces: string[];
+  provinces: string[] | null;
   deaths: number | null;
   injuries: number | null;
-  source_count: number;
+  source_count: number | null;
+  max_confidence: 'high' | 'medium' | null;
   first_published: string;
+  last_published: string;
   created_at?: string;
 }
 
+/** A story is only badged HIGH once several outlets have reported it. */
+export const HIGH_BADGE_MIN_SOURCES = 2;
+
+export function storyConfidence(story: Story): 'high' | 'medium' {
+  return story.max_confidence === 'high' &&
+    (story.source_count ?? 1) >= HIGH_BADGE_MIN_SOURCES
+    ? 'high'
+    : 'medium';
+}
+
 export interface Article {
-  id: string;
+  id: number;
   source: string;
   title: string;
   url: string;
@@ -24,12 +36,16 @@ export interface Article {
 export type StoryWithArticles = Story & { articles: Article[] };
 
 export async function fetchStories(limit = 100): Promise<Story[]> {
+  // Ordered by last_published, not first_published: Google News hands us
+  // articles whose publication date is weeks old, so a story discovered today
+  // would otherwise sort below the limit and never reach the feed.
   const { data, error } = await supabase
     .from('stories')
     .select(
-      'id, display_title, provinces, deaths, injuries, source_count, first_published, created_at'
+      'id, display_title, provinces, deaths, injuries, source_count, max_confidence, first_published, last_published, created_at'
     )
-    .order('first_published', { ascending: false })
+    .order('last_published', { ascending: false })
+    .order('created_at', { ascending: false })
     .limit(limit);
 
   if (error) throw new Error(error.message);
@@ -37,6 +53,10 @@ export async function fetchStories(limit = 100): Promise<Story[]> {
 }
 
 export async function fetchStory(id: string): Promise<StoryWithArticles> {
+  // stories.id is a bigint; anything else makes Postgres raise 22P02 and the
+  // driver message would be rendered straight into the page.
+  if (!/^\d+$/.test(id)) throw new Error('ไม่พบข่าวนี้');
+
   const { data: story, error } = await supabase
     .from('stories')
     .select('*')
@@ -44,7 +64,7 @@ export async function fetchStory(id: string): Promise<StoryWithArticles> {
     .maybeSingle();
 
   if (error) throw new Error(error.message);
-  if (!story) throw new Error('Story not found');
+  if (!story) throw new Error('ไม่พบข่าวนี้');
 
   const { data: articles, error: articlesError } = await supabase
     .from('articles')

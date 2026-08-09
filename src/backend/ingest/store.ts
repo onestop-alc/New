@@ -10,18 +10,16 @@ export interface CandidateStory {
   injuries: number | null;
 }
 
-export interface StoryInput {
+/** One article plus the story fields to use if it starts a new story. */
+export interface IngestInput {
+  /** Existing story to attach to, or null to create one. */
+  storyId: number | null;
   display_title: string;
   norm_title: string;
   trgm_key: string;
   provinces: string[];
   deaths: number | null;
   injuries: number | null;
-  first_published: Date;
-}
-
-export interface ArticleRow {
-  story_id: number;
   source: string;
   title: string;
   url: string;
@@ -30,94 +28,129 @@ export interface ArticleRow {
   published: Date;
 }
 
+export interface RunCounters {
+  fetched: number;
+  passed: number;
+  newStories: number;
+  merged: number;
+  skipped: number;
+  errors: number;
+  detail?: unknown;
+}
+
+/** Thrown when another ingestion run is already in flight. */
+export class RunInProgressError extends Error {
+  constructor() {
+    super('another ingestion run is already in progress');
+    this.name = 'RunInProgressError';
+  }
+}
+
+const UNIQUE_VIOLATION = '23505';
+
 export interface Store {
   readonly kind: 'postgres' | 'supabase';
-  articleExists(url: string): Promise<boolean>;
+  /** Returns only the URLs not already stored — one round trip for the batch. */
+  filterNewUrls(urls: string[]): Promise<Set<string>>;
   findCandidates(trgmKey: string, windowStart: Date): Promise<CandidateStory[]>;
-  insertStory(story: StoryInput): Promise<number>;
-  bumpStory(storyId: number, published: Date): Promise<void>;
-  insertArticle(article: ArticleRow): Promise<void>;
+  /** Atomic + idempotent: see ingest_article() in 0005_ingest_rpc.sql. */
+  ingestArticle(input: IngestInput): Promise<number>;
+  startRun(): Promise<number>;
+  finishRun(runId: number, status: 'ok' | 'error', counters: RunCounters): Promise<void>;
+}
+
+function ingestArgs(input: IngestInput) {
+  return [
+    input.storyId,
+    input.display_title,
+    input.norm_title,
+    input.trgm_key,
+    input.provinces,
+    input.deaths,
+    input.injuries,
+    input.source,
+    input.title,
+    input.url,
+    input.summary,
+    input.confidence,
+    input.published
+  ] as const;
 }
 
 /** Direct Postgres connection (DATABASE_URL). */
 function createPostgresStore(connectionString: string): Store {
   const pool = new Pool({
     connectionString,
-    ssl: { rejectUnauthorized: false },
+    ssl: { rejectUnauthorized: false }
   });
 
   return {
     kind: 'postgres',
 
-    async articleExists(url) {
-      const { rows } = await pool.query('SELECT 1 FROM articles WHERE url = $1', [url]);
-      return rows.length > 0;
+    async filterNewUrls(urls) {
+      if (urls.length === 0) return new Set();
+      const { rows } = await pool.query<{ filter_new_urls: string }>(
+        'SELECT filter_new_urls FROM filter_new_urls($1::text[])',
+        [urls]
+      );
+      return new Set(rows.map(row => row.filter_new_urls));
     },
 
     async findCandidates(trgmKey, windowStart) {
-      const { rows } = await pool.query(
-        `SELECT id, display_title, provinces, deaths, injuries
-         FROM stories
-         WHERE first_published >= $1
-           AND similarity(trgm_key, $2) >= $3
-         ORDER BY similarity(trgm_key, $2) DESC
-         LIMIT 20`,
-        [windowStart, trgmKey, CONFIG.SIMILARITY_THRESHOLD]
+      const { rows } = await pool.query<CandidateStory>(
+        'SELECT id, display_title, provinces, deaths, injuries FROM find_candidate_stories($1, $2, $3)',
+        [trgmKey, windowStart, CONFIG.SIMILARITY_THRESHOLD]
       );
       return rows;
     },
 
-    async insertStory(story) {
-      const { rows } = await pool.query(
-        `INSERT INTO stories (display_title, norm_title, trgm_key, provinces, deaths, injuries, first_published, last_published)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
-         RETURNING id`,
-        [
-          story.display_title,
-          story.norm_title,
-          story.trgm_key,
-          story.provinces,
-          story.deaths,
-          story.injuries,
-          story.first_published,
-        ]
+    async ingestArticle(input) {
+      const { rows } = await pool.query<{ ingest_article: number }>(
+        `SELECT ingest_article($1, $2, $3, $4, $5::text[], $6, $7, $8, $9, $10, $11, $12, $13)`,
+        [...ingestArgs(input)]
       );
-      return rows[0].id;
+      return rows[0].ingest_article;
     },
 
-    async bumpStory(storyId, published) {
-      await pool.query(
-        `UPDATE stories
-         SET source_count = source_count + 1,
-             last_published = GREATEST(last_published, $1)
-         WHERE id = $2`,
-        [published, storyId]
-      );
+    async startRun() {
+      try {
+        const { rows } = await pool.query<{ id: number }>(
+          `INSERT INTO ingest_runs (status) VALUES ('running') RETURNING id`
+        );
+        return rows[0].id;
+      } catch (err) {
+        if ((err as { code?: string }).code === UNIQUE_VIOLATION) throw new RunInProgressError();
+        throw err;
+      }
     },
 
-    async insertArticle(article) {
+    async finishRun(runId, status, counters) {
       await pool.query(
-        `INSERT INTO articles (story_id, source, title, url, summary, confidence, published)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
-         ON CONFLICT (url) DO NOTHING`,
+        `UPDATE ingest_runs
+            SET status = $1, finished_at = now(),
+                fetched = $2, passed = $3, new_stories = $4,
+                merged = $5, skipped = $6, errors = $7, detail = $8
+          WHERE id = $9`,
         [
-          article.story_id,
-          article.source,
-          article.title,
-          article.url,
-          article.summary,
-          article.confidence,
-          article.published,
+          status,
+          counters.fetched,
+          counters.passed,
+          counters.newStories,
+          counters.merged,
+          counters.skipped,
+          counters.errors,
+          counters.detail ? JSON.stringify(counters.detail) : null,
+          runId
         ]
       );
-    },
+    }
   };
 }
 
 /** Supabase REST with the service_role key (bypasses RLS). */
 function createSupabaseStore(url: string, serviceRoleKey: string): Store {
   const client: SupabaseClient = createClient(url, serviceRoleKey, {
-    auth: { persistSession: false, autoRefreshToken: false },
+    auth: { persistSession: false, autoRefreshToken: false }
   });
 
   const fail = (context: string, error: { message: string } | null) => {
@@ -127,82 +160,71 @@ function createSupabaseStore(url: string, serviceRoleKey: string): Store {
   return {
     kind: 'supabase',
 
-    async articleExists(articleUrl) {
-      const { data, error } = await client
-        .from('articles')
-        .select('id')
-        .eq('url', articleUrl)
-        .limit(1);
-      fail('articleExists', error);
-      return (data?.length ?? 0) > 0;
+    async filterNewUrls(urls) {
+      if (urls.length === 0) return new Set();
+      const { data, error } = await client.rpc('filter_new_urls', { urls });
+      fail('filterNewUrls', error);
+      return new Set((data ?? []) as string[]);
     },
 
     async findCandidates(trgmKey, windowStart) {
       const { data, error } = await client.rpc('find_candidate_stories', {
         search_key: trgmKey,
         window_start: windowStart.toISOString(),
-        threshold: CONFIG.SIMILARITY_THRESHOLD,
+        threshold: CONFIG.SIMILARITY_THRESHOLD
       });
       fail('findCandidates', error);
       return (data ?? []) as CandidateStory[];
     },
 
-    async insertStory(story) {
-      const published = story.first_published.toISOString();
+    async ingestArticle(input) {
+      const { data, error } = await client.rpc('ingest_article', {
+        p_story_id: input.storyId,
+        p_display_title: input.display_title,
+        p_norm_title: input.norm_title,
+        p_trgm_key: input.trgm_key,
+        p_provinces: input.provinces,
+        p_deaths: input.deaths,
+        p_injuries: input.injuries,
+        p_source: input.source,
+        p_title: input.title,
+        p_url: input.url,
+        p_summary: input.summary,
+        p_confidence: input.confidence,
+        p_published: input.published.toISOString()
+      });
+      fail('ingestArticle', error);
+      return data as number;
+    },
+
+    async startRun() {
       const { data, error } = await client
-        .from('stories')
-        .insert({
-          display_title: story.display_title,
-          norm_title: story.norm_title,
-          trgm_key: story.trgm_key,
-          provinces: story.provinces,
-          deaths: story.deaths,
-          injuries: story.injuries,
-          first_published: published,
-          last_published: published,
-        })
+        .from('ingest_runs')
+        .insert({ status: 'running' })
         .select('id')
         .single();
-      fail('insertStory', error);
+      if (error?.code === UNIQUE_VIOLATION) throw new RunInProgressError();
+      fail('startRun', error);
       return (data as { id: number }).id;
     },
 
-    async bumpStory(storyId, published) {
-      const { data, error } = await client
-        .from('stories')
-        .select('source_count, last_published')
-        .eq('id', storyId)
-        .single();
-      fail('bumpStory/read', error);
-
-      const current = data as { source_count: number; last_published: string };
-      const last =
-        new Date(current.last_published) > published
-          ? current.last_published
-          : published.toISOString();
-
-      const { error: updateError } = await client
-        .from('stories')
-        .update({ source_count: (current.source_count ?? 0) + 1, last_published: last })
-        .eq('id', storyId);
-      fail('bumpStory/update', updateError);
-    },
-
-    async insertArticle(article) {
-      const { error } = await client.from('articles').upsert(
-        {
-          story_id: article.story_id,
-          source: article.source,
-          title: article.title,
-          url: article.url,
-          summary: article.summary,
-          confidence: article.confidence,
-          published: article.published.toISOString(),
-        },
-        { onConflict: 'url', ignoreDuplicates: true }
-      );
-      fail('insertArticle', error);
-    },
+    async finishRun(runId, status, counters) {
+      const { error } = await client
+        .from('ingest_runs')
+        .update({
+          status,
+          finished_at: new Date().toISOString(),
+          fetched: counters.fetched,
+          passed: counters.passed,
+          new_stories: counters.newStories,
+          merged: counters.merged,
+          skipped: counters.skipped,
+          errors: counters.errors,
+          detail: counters.detail ?? null
+        })
+        .eq('id', runId);
+      fail('finishRun', error);
+    }
   };
 }
 

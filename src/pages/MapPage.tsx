@@ -73,7 +73,7 @@ export default function MapPage() {
               แผนที่ความเสี่ยง (Heatmap)
            </h3>
            <div className="flex gap-2">
-              <span className="text-[10px] font-bold text-slate-500 bg-slate-100 px-2 py-1 rounded">อัปเดต 24 ชม.</span>
+              <span className="text-[10px] font-bold text-slate-500 bg-slate-100 px-2 py-1 rounded">จาก {stories.length} ข่าวล่าสุด</span>
            </div>
         </div>
         

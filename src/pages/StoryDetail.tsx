@@ -92,7 +92,8 @@ export default function StoryDetail() {
            <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">บทสรุปรวม ({story.articles?.length || 0} สำนักข่าว)</h3>
            <p className="text-sm text-slate-600 leading-relaxed">
              {/* Simple synthesized summary from first article for aesthetic */}
-             {story.articles?.[0]?.summary || 'ไม่มีรายละเอียดสรุปเพิ่มเติมสำหรับเหตุการณ์นี้'}
+             {story.articles?.find(article => article.summary?.trim())?.summary
+               || 'ไม่มีรายละเอียดสรุปเพิ่มเติมสำหรับเหตุการณ์นี้'}
            </p>
         </div>
 

@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { formatDistanceToNow } from 'date-fns';
 import { th } from 'date-fns/locale';
 import { AlertTriangle, Activity } from 'lucide-react';
-import { fetchStories, type Story } from '../lib/api.js';
+import { fetchStories, storyConfidence, type Story } from '../lib/api.js';
 
 export default function Feed() {
   const [stories, setStories] = useState<Story[]>([]);
@@ -61,6 +61,9 @@ export default function Feed() {
     return { icon: '🚨', color: 'bg-slate-100' };
   };
 
+  // source_count has a default but no NOT NULL — Array(NaN) would blank the page.
+  const featuredSourceCount = featuredStory?.source_count ?? 1;
+
   // Calculate overall stats for the widget
   const totalDeaths = stories.reduce((acc, curr) => acc + (curr.deaths || 0), 0);
   const totalInjuries = stories.reduce((acc, curr) => acc + (curr.injuries || 0), 0);
@@ -77,7 +80,11 @@ export default function Feed() {
       {featuredStory && (
         <section className="lg:col-span-8 bg-white rounded-3xl border border-slate-200 shadow-sm p-6 flex flex-col relative overflow-hidden">
           <div className="absolute top-0 right-0 p-6">
-            <span className="bg-red-50 text-red-600 text-[10px] font-bold px-2 py-1 rounded border border-red-100">HIGH CONFIDENCE</span>
+            {storyConfidence(featuredStory) === 'high' ? (
+              <span className="bg-red-50 text-red-600 text-[10px] font-bold px-2 py-1 rounded border border-red-100">HIGH CONFIDENCE</span>
+            ) : (
+              <span className="bg-amber-50 text-amber-700 text-[10px] font-bold px-2 py-1 rounded border border-amber-100">MEDIUM CONFIDENCE</span>
+            )}
           </div>
           <div className="mb-4">
             <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">LATEST STORY: #{featuredStory.id.toString().padStart(5, '0')}</span>
@@ -110,18 +117,18 @@ export default function Feed() {
           
           <div className="mt-auto flex items-center justify-between">
              <div className="flex -space-x-2">
-              {[...Array(Math.min(featuredStory.source_count, 4))].map((_, i) => (
+              {[...Array(Math.min(featuredSourceCount, 4))].map((_, i) => (
                  <div key={i} className="w-8 h-8 rounded-full bg-slate-200 border-2 border-white flex items-center justify-center text-[10px] text-slate-600 font-bold shadow-sm">
                    <Activity className="h-3 w-3" />
                  </div>
               ))}
-              {featuredStory.source_count > 4 && (
+              {featuredSourceCount > 4 && (
                 <div className="w-8 h-8 rounded-full bg-slate-100 border-2 border-white flex items-center justify-center text-[10px] text-slate-500 font-bold">
-                  +{featuredStory.source_count - 4}
+                  +{featuredSourceCount - 4}
                 </div>
               )}
             </div>
-            <span className="text-xs text-slate-400 font-medium italic">รายงานโดย {featuredStory.source_count} สำนักข่าว</span>
+            <span className="text-xs text-slate-400 font-medium italic">รายงานโดย {featuredSourceCount} สำนักข่าว</span>
           </div>
         </section>
       )}
@@ -129,7 +136,7 @@ export default function Feed() {
       {/* Statistics Widget */}
       <section className="lg:col-span-4 bg-slate-900 rounded-3xl p-6 text-white flex flex-col justify-between shadow-sm">
         <div>
-          <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-4">ภาพรวม (จากข้อมูลทั้งหมด)</h3>
+          <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-4">ภาพรวม (จาก {stories.length} ข่าวล่าสุด)</h3>
           <div className="grid grid-cols-2 gap-4">
             <div>
               <div className="text-4xl font-black text-red-500">{totalDeaths}</div>

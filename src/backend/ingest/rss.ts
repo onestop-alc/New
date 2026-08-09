@@ -1,16 +1,21 @@
 import Parser from 'rss-parser';
-import { GOOGLE_NEWS_QUERIES, DIRECT_FEEDS } from './feeds.js';
+import { GOOGLE_NEWS_QUERIES, GOOGLE_NEWS_QUERIES_SEASONAL, DIRECT_FEEDS, CONFIG } from './feeds.js';
 import sanitizeHtml from 'sanitize-html';
+
+type GoogleNewsItem = { sourceName?: string | { '#text'?: string } };
 
 // Several Thai news feeds stall instead of refusing the connection, so every
 // request needs a hard timeout or a single feed can hang the whole run.
-const parser = new Parser({
-  timeout: 15000,
+// A browser UA matters too: khaosod.co.th/feed 403s a bot UA.
+const parser: Parser<Record<string, unknown>, GoogleNewsItem> = new Parser({
+  timeout: CONFIG.FEED_TIMEOUT_MS,
   headers: {
     'User-Agent':
-      'Mozilla/5.0 (compatible; DrunkDrivingNewsBot/1.0; +https://github.com/)',
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
+      '(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
     Accept: 'application/rss+xml, application/xml;q=0.9, */*;q=0.8'
-  }
+  },
+  customFields: { item: [['source', 'sourceName']] }
 });
 
 export interface ArticleInput {
@@ -24,52 +29,84 @@ export interface ArticleInput {
 function cleanHtml(html: string | undefined): string {
   if (!html) return '';
   const text = sanitizeHtml(html, { allowedTags: [], allowedAttributes: {} });
-  return text.substring(0, 300).trim(); // Limit to 300 chars
+  return text.substring(0, CONFIG.MAX_SUMMARY_LENGTH).trim();
 }
 
-export async function fetchGoogleNews(): Promise<ArticleInput[]> {
+/** rss-parser normalises dates into isoDate; pubDate is whatever the feed sent. */
+function parseDate(item: { isoDate?: string; pubDate?: string }): Date | null {
+  const raw = item.isoDate || item.pubDate;
+  if (!raw) return null;
+  const date = new Date(raw);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function isTooOld(date: Date): boolean {
+  const ageDays = (Date.now() - date.getTime()) / 86_400_000;
+  return ageDays > CONFIG.MAX_ARTICLE_AGE_DAYS;
+}
+
+export async function fetchGoogleNews(queries: string[] = GOOGLE_NEWS_QUERIES): Promise<ArticleInput[]> {
   const articles: ArticleInput[] = [];
 
-  const queries = GOOGLE_NEWS_QUERIES.map(async (query) => {
+  const requests = queries.map(async (query) => {
     try {
       const url = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=th&gl=TH&ceid=TH:th`;
       const feed = await parser.parseURL(url);
-      
+
       for (const item of feed.items) {
-        if (!item.title || !item.link || !item.pubDate) continue;
-        // Google news title format: "Article Title - Source Name"
-        const titleParts = item.title.split(' - ');
-        const source = titleParts.length > 1 ? titleParts.pop()! : 'Google News';
-        const title = titleParts.join(' - ');
-        
+        if (!item.title || !item.link) continue;
+        const pubDate = parseDate(item);
+        if (!pubDate || isTooOld(pubDate)) continue;
+
+        // The <source> element carries the clean outlet name. Falling back to
+        // splitting on " - " keeps section prefixes ("ในประเทศ - ...") in the title.
+        const rawSource = item.sourceName;
+        const sourceTag = typeof rawSource === 'string' ? rawSource : rawSource?.['#text'];
+        let title = item.title;
+        let source = sourceTag?.trim() || '';
+
+        const parts = item.title.split(' - ');
+        if (parts.length > 1) {
+          const suffix = parts[parts.length - 1].trim();
+          if (!source) source = suffix;
+          if (suffix === source) title = parts.slice(0, -1).join(' - ');
+        }
+
         articles.push({
-          title,
+          title: title.trim(),
           link: item.link,
-          pubDate: new Date(item.pubDate),
-          source,
-          summary: cleanHtml(item.contentSnippet || item.content || item.summary)
+          pubDate,
+          // Google News <description> is just the headline wrapped in a link,
+          // so a summary here would repeat the title on the story page.
+          summary: '',
+          source: source || 'Google News'
         });
       }
     } catch (e) {
       console.error(`Failed to fetch Google News for query ${query}:`, e);
     }
-  }
+  });
+
+  await Promise.allSettled(requests);
   return articles;
 }
 
 export async function fetchDirectFeeds(): Promise<ArticleInput[]> {
   const articles: ArticleInput[] = [];
-  
-  const promises = DIRECT_FEEDS.map(async (url) => {
+
+  const requests = DIRECT_FEEDS.map(async (url) => {
     try {
       const feed = await parser.parseURL(url);
       const source = feed.title || 'Unknown Source';
       for (const item of feed.items) {
-        if (!item.title || !item.link || !item.pubDate) continue;
+        if (!item.title || !item.link) continue;
+        const pubDate = parseDate(item);
+        if (!pubDate || isTooOld(pubDate)) continue;
+
         articles.push({
           title: item.title,
           link: item.link,
-          pubDate: new Date(item.pubDate),
+          pubDate,
           source,
           summary: cleanHtml(item.contentSnippet || item.content || item.summary)
         });
@@ -79,26 +116,30 @@ export async function fetchDirectFeeds(): Promise<ArticleInput[]> {
     }
   });
 
-  await Promise.allSettled(promises);
+  await Promise.allSettled(requests);
   return articles;
 }
 
-export async function fetchAllFeeds(): Promise<ArticleInput[]> {
+export async function fetchAllFeeds(options: { seasonal?: boolean } = {}): Promise<ArticleInput[]> {
+  const queries = options.seasonal
+    ? [...GOOGLE_NEWS_QUERIES, ...GOOGLE_NEWS_QUERIES_SEASONAL]
+    : GOOGLE_NEWS_QUERIES;
+
   const [googleNews, direct] = await Promise.all([
-    fetchGoogleNews(),
+    fetchGoogleNews(queries),
     fetchDirectFeeds()
   ]);
-  
+
   // Basic URL deduplication before further processing
   const seenUrls = new Set<string>();
   const unique: ArticleInput[] = [];
-  
+
   for (const article of [...googleNews, ...direct]) {
     if (!seenUrls.has(article.link)) {
       seenUrls.add(article.link);
       unique.push(article);
     }
   }
-  
+
   return unique;
 }
