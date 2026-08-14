@@ -5,6 +5,7 @@ import {
   type DryRunResult,
   type IngestionResult
 } from '../../../supabase/functions/_shared/pipeline.ts';
+import { buildIngestExtras } from '../../../supabase/functions/_shared/runtime-config.ts';
 
 export type { IngestionResult, DryRunResult };
 
@@ -30,8 +31,11 @@ export async function runIngestion(
     return null;
   }
 
+  const extras = buildIngestExtras(key => process.env[key]);
+
   return runPipeline({
     store,
-    fetchArticles: () => fetchAllFeeds({ seasonal: options.seasonal })
+    fetchArticles: () => fetchAllFeeds({ seasonal: options.seasonal }),
+    ...extras
   });
 }

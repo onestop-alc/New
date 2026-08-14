@@ -261,9 +261,29 @@ export const CONFIG = {
   STRONG_SIMILARITY: 0.85,
   DEDUP_WINDOW_DAYS: 3,
   MAX_SUMMARY_LENGTH: 300,
+  /**
+   * Two outlets may disagree on the toll of the same crash while it develops.
+   * Merging them is only safe inside this window; beyond it a conflicting count
+   * is more likely a different event with a templated headline.
+   */
+  CASUALTY_CONFLICT_WINDOW_HOURS: 24,
   /** Google News is relevance-ranked and returns items back to 2009. */
   MAX_ARTICLE_AGE_DAYS: 45,
   /** A story only shows the HIGH badge once this many outlets report it. */
   HIGH_BADGE_MIN_SOURCES: 2,
-  FEED_TIMEOUT_MS: 15000
+  FEED_TIMEOUT_MS: 15000,
+
+  // --- article body fetch (Phase 2b). Bodies are read in memory and never
+  // stored: only the short casualty snippet is persisted.
+  MAX_BODY_LENGTH: 2500,
+  BODY_FETCH_ENABLED: false,
+  BODY_FETCH_MAX_PER_RUN: 25,
+  BODY_FETCH_CONCURRENCY: 4,
+  BODY_FETCH_TIMEOUT_MS: 6000,
+  /** Global deadline for the whole body-fetch phase, checked before each request. */
+  BODY_FETCH_BUDGET_MS: 45_000,
+  BODY_FETCH_MAX_BYTES: 512_000,
+  BODY_FETCH_HOST_DELAY_MS: 300,
+  /** Skip the body when the title+summary already gave a confident figure. */
+  BODY_FETCH_MIN_CONFIDENCE: 0.7
 };

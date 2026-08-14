@@ -2,20 +2,22 @@
  * Runtime-agnostic ingestion pipeline.
  *
  * Node (npm run ingest) and the Supabase Edge Function share this file: only
- * the feed fetcher and the storage backend differ, so both are injected. Keep
- * this module free of Node- and Deno-specific APIs.
+ * the feed fetcher, the body fetcher and the storage backend differ, so all
+ * three are injected. Keep this module free of Node- and Deno-specific APIs.
  */
 import { classifyArticle, normalizeForMatch } from './filters.ts';
-import {
-  normalizeTitle,
-  extractTrgmKey,
-  extractDeaths,
-  extractInjuries,
-  extractProvinces,
-  isSameStory
-} from './dedup.ts';
+import { normalizeTitle, isSameStory } from './dedup.ts';
 import { CONFIG } from './feeds.ts';
 import { canonicalSource } from './sources.ts';
+import {
+  enrichArticles,
+  type ArticleEnrichment,
+  type ArticleFacts,
+  type FactExtractor
+} from './enrich.ts';
+import type { BodyFetcher } from './article-text.ts';
+
+export type { ArticleEnrichment, ArticleFacts, FactExtractor };
 
 export interface ArticleInput {
   title: string;
@@ -31,6 +33,8 @@ export interface CandidateStory {
   provinces: string[] | null;
   deaths: number | null;
   injuries: number | null;
+  /** Bounds a merge between two reports that disagree on the toll. */
+  last_published?: string | null;
 }
 
 /** One article plus the story fields to use if it starts a new story. */
@@ -41,6 +45,10 @@ export interface IngestInput {
   norm_title: string;
   trgm_key: string;
   provinces: string[];
+  /**
+   * Seed values for a newly created story. The authoritative story-level figure
+   * is recomputed from every member article by recompute_story_casualties().
+   */
   deaths: number | null;
   injuries: number | null;
   source: string;
@@ -57,6 +65,15 @@ export interface IngestInput {
   published: Date;
 }
 
+export interface PendingArticle {
+  id: number;
+  url: string;
+  title: string;
+  summary: string;
+  source: string;
+  published: Date;
+}
+
 export interface RunCounters {
   fetched: number;
   passed: number;
@@ -64,6 +81,11 @@ export interface RunCounters {
   merged: number;
   skipped: number;
   errors: number;
+  /** Body fetches attempted this run. */
+  bodiesFetched?: number;
+  /** LLM extraction calls that returned a usable result. */
+  llmOk?: number;
+  llmErrors?: number;
   detail?: unknown;
 }
 
@@ -77,6 +99,13 @@ export interface Store {
    * article was already stored, possibly under a different URL.
    */
   ingestArticle(input: IngestInput): Promise<{ storyId: number; inserted: boolean }>;
+  /**
+   * Writes the article-level casualty facts and re-derives the story figure
+   * from every member article. Safe to call repeatedly for the same URL.
+   */
+  saveArticleFacts(url: string, facts: ArticleFacts): Promise<void>;
+  /** Articles still carrying regex-only facts, newest first. */
+  listPendingExtraction(limit: number): Promise<PendingArticle[]>;
   startRun(): Promise<number>;
   finishRun(runId: number, status: 'ok' | 'error', counters: RunCounters): Promise<void>;
 }
@@ -98,6 +127,9 @@ export interface IngestionResult {
   merged: number;
   skipped: number;
   errors: number;
+  bodiesFetched?: number;
+  llmOk?: number;
+  llmErrors?: number;
 }
 
 export interface ClassifiedArticle extends ArticleInput {
@@ -107,28 +139,26 @@ export interface ClassifiedArticle extends ArticleInput {
 
 export interface DryRunResult extends IngestionResult {
   dryRun: true;
-  articles: ClassifiedArticle[];
+  articles: Array<ClassifiedArticle & { facts: ArticleEnrichment }>;
 }
 
 export interface PipelineDeps {
   /** null runs the classifier only (dry run). */
   store: Store | null;
   fetchArticles: () => Promise<ArticleInput[]>;
-}
-
-function extractFacts(article: ArticleInput) {
-  return {
-    provinces: extractProvinces(`${article.title} ${article.summary}`),
-    deaths: extractDeaths(article.title),
-    injuries: extractInjuries(article.title),
-    trgmKey: extractTrgmKey(article.title)
-  };
+  /**
+   * Optional publisher-page reader. Absent means title+summary only. Bodies are
+   * held in memory for the duration of the run and never persisted.
+   */
+  fetchBody?: BodyFetcher;
+  /** Optional LLM extractor. Absent or null leaves the regex facts in place. */
+  extractor?: FactExtractor | null;
 }
 
 async function findMatchingStory(
   store: Store,
   article: ArticleInput,
-  facts: ReturnType<typeof extractFacts>
+  facts: ArticleEnrichment
 ): Promise<number | null> {
   const windowStart = new Date(
     article.pubDate.getTime() - CONFIG.DEDUP_WINDOW_DAYS * 86_400_000
@@ -137,10 +167,20 @@ async function findMatchingStory(
 
   const match = candidates.find(candidate =>
     isSameStory(
-      article.title, candidate.display_title,
-      facts.provinces, candidate.provinces ?? [],
-      facts.deaths, candidate.deaths,
-      facts.injuries, candidate.injuries
+      {
+        title: article.title,
+        provinces: facts.provinces,
+        deaths: facts.deaths,
+        injuries: facts.injuries,
+        published: article.pubDate
+      },
+      {
+        title: candidate.display_title,
+        provinces: candidate.provinces ?? [],
+        deaths: candidate.deaths,
+        injuries: candidate.injuries,
+        published: candidate.last_published ? new Date(candidate.last_published) : null
+      }
     )
   );
 
@@ -204,18 +244,26 @@ export async function runPipeline(
 
     if (!store) {
       relevant.sort((a, b) => b.pubDate.getTime() - a.pubDate.getTime());
+      const dryFacts = await enrichArticles(relevant, deps, result);
       console.log(
         `Dry run: ${result.fetched} fetched, ${result.passed} relevant ` +
         `(${relevant.filter(a => a.confidence === 'high').length} high / ` +
         `${relevant.filter(a => a.confidence === 'medium').length} medium).`
       );
-      for (const article of relevant.slice(0, 10)) {
+      for (const article of relevant.slice(0, 20)) {
+        const facts = dryFacts.get(article.link)!;
         console.log(
           `  [${article.confidence}] ${article.pubDate.toISOString().slice(0, 10)} ` +
+          `dead=${fmt(facts.deaths)} hurt=${fmt(facts.injuries)} ` +
+          `${facts.facts.casualty_scope === 'aggregate' ? '(aggregate) ' : ''}` +
           `${article.title}  — ${article.source} (${article.reason})`
         );
       }
-      return { ...result, dryRun: true, articles: relevant };
+      return {
+        ...result,
+        dryRun: true,
+        articles: relevant.map(a => ({ ...a, facts: dryFacts.get(a.link)! }))
+      };
     }
 
     // One round trip instead of one per article: everything already stored is
@@ -223,10 +271,15 @@ export async function runPipeline(
     const newUrls = await store.filterNewUrls(relevant.map(a => a.link));
     result.skipped = relevant.length - newUrls.size;
 
-    for (const article of relevant) {
-      if (!newUrls.has(article.link)) continue;
+    const queue = relevant.filter(article => newUrls.has(article.link));
+    // Body fetch and LLM extraction happen here, after filterNewUrls, so their
+    // cost scales with genuinely new articles rather than with everything the
+    // classifier passed — the same headline resurfaces in Bing for days.
+    const enriched = await enrichArticles(queue, deps, result);
+
+    for (const article of queue) {
       try {
-        const facts = extractFacts(article);
+        const facts = enriched.get(article.link)!;
         const storyId = await findMatchingStory(store, article, facts);
         const outlet = canonicalSource(article.source);
 
@@ -252,6 +305,12 @@ export async function runPipeline(
         if (!outcome.inserted) result.skipped++;      // same article, other URL
         else if (storyId) result.merged++;
         else result.newStories++;
+
+        // Runs on merges too. In 0010 the story kept whatever the first article
+        // said, so a later, better count from another outlet was discarded.
+        if (outcome.inserted) {
+          await store.saveArticleFacts(article.link, facts.facts);
+        }
       } catch (err) {
         result.errors++;
         console.error(`Error processing article ${article.link}:`, err);
@@ -273,4 +332,8 @@ export async function runPipeline(
     }
     throw err;
   }
+}
+
+function fmt(value: number | null): string {
+  return value === null ? '?' : String(value);
 }

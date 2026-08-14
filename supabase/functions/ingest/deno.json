@@ -1,5 +1,6 @@
 {
   "imports": {
+    "@anthropic-ai/sdk": "npm:@anthropic-ai/sdk@0.74.0",
     "@supabase/supabase-js": "npm:@supabase/supabase-js@2.112.2",
     "fast-xml-parser": "npm:fast-xml-parser@4.5.7",
     "string-similarity-js": "npm:string-similarity-js@2.1.4"

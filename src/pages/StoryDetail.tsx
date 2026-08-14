@@ -3,7 +3,18 @@ import { useParams, Link } from 'react-router-dom';
 import { format } from 'date-fns';
 import { th } from 'date-fns/locale';
 import { ArrowLeft, ExternalLink, MapPin, Skull, FileText, Activity, Clock } from 'lucide-react';
-import { fetchStory, type StoryWithArticles } from '../lib/api.js';
+import {
+  casualtyLabel,
+  casualtyState,
+  fetchStory,
+  type StoryWithArticles
+} from '../lib/api.js';
+
+const SOURCE_LABELS: Record<string, string> = {
+  regex: 'คำสำคัญ',
+  llm: 'AI',
+  manual: 'บรรณาธิการ'
+};
 
 export default function StoryDetail() {
   const { id } = useParams();
@@ -41,6 +52,14 @@ export default function StoryDetail() {
       </div>
     );
   }
+
+  // The snippet lives on the article the figure was read from, so find the
+  // first member article carrying one.
+  const sourceKind = story.deaths_source ?? story.injuries_source ?? null;
+  const snippet = story.articles?.find(a => a.casualty_snippet?.trim())?.casualty_snippet;
+  const evidence = sourceKind || snippet
+    ? { label: SOURCE_LABELS[sourceKind ?? ''] ?? 'คำสำคัญ', snippet: snippet ?? '' }
+    : null;
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
@@ -81,10 +100,22 @@ export default function StoryDetail() {
            )}
            <div className="flex flex-col">
               <span className="text-[10px] text-slate-400 font-bold uppercase">ความสูญเสีย</span>
-              <span className="text-sm font-semibold text-red-600 flex items-center gap-1">
+              <span
+                className={`text-sm font-semibold flex items-center gap-1 ${
+                  casualtyState(story) === 'unknown' ? 'text-slate-500' : 'text-red-600'
+                }`}
+              >
                  <Skull className="h-4 w-4" />
-                 เสียชีวิต {story.deaths || 0} | บาดเจ็บ {story.injuries || 0}
+                 เสียชีวิต {casualtyLabel(story.deaths)} | บาดเจ็บ {casualtyLabel(story.injuries)}
               </span>
+              {/* Provenance: makes a wrong figure reportable instead of
+                  mysterious, and shows the span it was read from. */}
+              {evidence && (
+                <span className="text-[10px] text-slate-400 font-medium mt-1" title={evidence.snippet}>
+                  ตัวเลขจาก: {evidence.label}
+                  {evidence.snippet && <> · “{evidence.snippet}”</>}
+                </span>
+              )}
            </div>
         </div>
 

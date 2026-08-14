@@ -3,7 +3,14 @@ import { Link } from 'react-router-dom';
 import { formatDistanceToNow } from 'date-fns';
 import { th } from 'date-fns/locale';
 import { AlertTriangle, Activity } from 'lucide-react';
-import { fetchStories, storyConfidence, type Story } from '../lib/api.js';
+import {
+  casualtyLabel,
+  casualtyState,
+  casualtyTotals,
+  fetchStories,
+  storyConfidence,
+  type Story
+} from '../lib/api.js';
 
 export default function Feed() {
   const [stories, setStories] = useState<Story[]>([]);
@@ -64,15 +71,22 @@ export default function Feed() {
   // source_count has a default but no NOT NULL — Array(NaN) would blank the page.
   const featuredSourceCount = featuredStory?.source_count ?? 1;
 
-  // Calculate overall stats for the widget
-  const totalDeaths = stories.reduce((acc, curr) => acc + (curr.deaths || 0), 0);
-  const totalInjuries = stories.reduce((acc, curr) => acc + (curr.injuries || 0), 0);
+  // Excludes stories with no reported figure and period roundups — see
+  // casualtyTotals(). Imputing zero for "not reported" is what made the old
+  // headline number an undercount that read like a fact.
+  const totals = casualtyTotals(stories);
   const topProvince: Record<string, number> = {};
   for (const story of stories) {
     const province = story.provinces?.[0];
     if (province) topProvince[province] = (topProvince[province] || 0) + 1;
   }
-  const highestRiskArea = Object.entries(topProvince).sort((a, b) => b[1] - a[1])[0]?.[0] || 'ไม่ระบุ';
+  const [highestRiskArea = 'ไม่ระบุ', highestRiskCount = 0] =
+    Object.entries(topProvince).sort((a, b) => b[1] - a[1])[0] ?? [];
+  // Was hard-coded to 75%, which meant nothing. Share of the stories on screen
+  // that name this province.
+  const highestRiskShare = stories.length
+    ? Math.round((highestRiskCount / stories.length) * 100)
+    : 0;
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
@@ -102,8 +116,12 @@ export default function Feed() {
             <div className="h-8 w-px bg-slate-200 hidden sm:block"></div>
             <div className="flex flex-col">
               <span className="text-[10px] text-slate-400 font-bold uppercase">ความสูญเสีย</span>
-              <span className="text-sm font-semibold text-red-600">
-                เสียชีวิต {featuredStory.deaths || 0} | บาดเจ็บ {featuredStory.injuries || 0}
+              <span
+                className={`text-sm font-semibold ${
+                  casualtyState(featuredStory) === 'unknown' ? 'text-slate-500' : 'text-red-600'
+                }`}
+              >
+                เสียชีวิต {casualtyLabel(featuredStory.deaths)} | บาดเจ็บ {casualtyLabel(featuredStory.injuries)}
               </span>
             </div>
             <div className="h-8 w-px bg-slate-200 hidden sm:block"></div>
@@ -139,22 +157,35 @@ export default function Feed() {
           <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-4">ภาพรวม (จาก {stories.length} ข่าวล่าสุด)</h3>
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <div className="text-4xl font-black text-red-500">{totalDeaths}</div>
+              <div className="text-4xl font-black text-red-500">{totals.deaths}</div>
               <div className="text-[10px] font-bold text-slate-400 uppercase">เสียชีวิตรวม</div>
             </div>
             <div>
-              <div className="text-4xl font-black text-orange-400">{totalInjuries}</div>
+              <div className="text-4xl font-black text-orange-400">{totals.injuries}</div>
               <div className="text-[10px] font-bold text-slate-400 uppercase">บาดเจ็บรวม</div>
             </div>
           </div>
+          <p className="text-[10px] text-slate-500 font-medium mt-3 leading-relaxed">
+            นับจาก {totals.counted} ข่าวที่ระบุจำนวน
+            {totals.unknown > 0 && <> · อีก {totals.unknown} ข่าวไม่ระบุ</>}
+            {totals.aggregate > 0 && <> · ไม่รวม {totals.aggregate} ข่าวสรุปสถิติ</>}
+          </p>
         </div>
         <div className="pt-4 mt-6 border-t border-slate-800">
            <div className="flex justify-between text-xs mb-1">
              <span className="text-slate-400">พื้นที่เฝ้าระวังสูงสุด</span>
-             <span className="text-emerald-400 font-bold">{highestRiskArea}</span>
+             <span className="text-emerald-400 font-bold">
+               {highestRiskArea}
+               {highestRiskCount > 0 && (
+                 <span className="text-slate-500 font-medium"> · {highestRiskShare}%</span>
+               )}
+             </span>
            </div>
            <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
-             <div className="bg-emerald-500 h-1.5 rounded-full w-[75%]"></div>
+             <div
+               className="bg-emerald-500 h-1.5 rounded-full transition-all"
+               style={{ width: `${highestRiskShare}%` }}
+             ></div>
            </div>
         </div>
       </section>
@@ -183,12 +214,17 @@ export default function Feed() {
                   <p className="text-[10px] text-slate-500 font-medium flex gap-2 mt-1 truncate">
                     <span>{formatDistanceToNow(new Date(story.first_published), { addSuffix: true, locale: th })}</span>
                     <span>•</span>
-                    {(story.deaths ? story.deaths > 0 : false) ? (
+                    {/* Four-way, not three: an unread story used to render the
+                        green "no casualties" badge, i.e. the site asserted a
+                        fact it did not have. */}
+                    {casualtyState(story) === 'fatal' ? (
                       <span className="text-red-500">เสียชีวิต {story.deaths}</span>
-                    ) : (story.injuries ? story.injuries > 0 : false) ? (
+                    ) : casualtyState(story) === 'injury' ? (
                       <span className="text-orange-500">บาดเจ็บ {story.injuries}</span>
-                    ) : (
+                    ) : casualtyState(story) === 'none' ? (
                       <span className="text-emerald-500">ไม่มีผู้บาดเจ็บ/เสียชีวิต</span>
+                    ) : (
+                      <span className="text-slate-400">ยังไม่ระบุจำนวน</span>
                     )}
                   </p>
                 </div>

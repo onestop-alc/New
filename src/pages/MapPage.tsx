@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Map, AlertTriangle } from 'lucide-react';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Cell } from 'recharts';
-import { fetchStories, type Story } from '../lib/api.js';
+import { fetchStories, isAggregateStory, type Story } from '../lib/api.js';
 
 export default function MapPage() {
   const [stories, setStories] = useState<Story[]>([]);
@@ -24,38 +24,61 @@ export default function MapPage() {
     );
   }
 
-  // Aggregate stats by province
-  const provinceStats: Record<string, { count: number, deaths: number }> = {};
-  
+  // Aggregate stats by province.
+  //
+  // The incident count includes every story; the death count includes only the
+  // ones that stated a figure, so an unread story doesn't silently read as a
+  // province with zero deaths. Period roundups are excluded outright — their
+  // national totals would swamp every individual crash.
+  //
+  // Known limitation: a story naming two provinces adds its full death count to
+  // both, so the death bars sum to more than the national total.
+  const provinceStats: Record<string, { count: number; deaths: number; known: number }> = {};
+  let aggregateStories = 0;
+
   stories.forEach(story => {
-    if (story.provinces && story.provinces.length > 0) {
-      story.provinces.forEach(prov => {
-        if (!provinceStats[prov]) {
-          provinceStats[prov] = { count: 0, deaths: 0 };
-        }
-        provinceStats[prov].count += 1;
-        if (story.deaths) provinceStats[prov].deaths += story.deaths;
-      });
+    if (isAggregateStory(story)) {
+      aggregateStories++;
+      return;
     }
+    if (!story.provinces?.length) return;
+
+    story.provinces.forEach(prov => {
+      if (!provinceStats[prov]) {
+        provinceStats[prov] = { count: 0, deaths: 0, known: 0 };
+      }
+      provinceStats[prov].count += 1;
+      if (story.deaths !== null) {
+        provinceStats[prov].deaths += story.deaths;
+        provinceStats[prov].known += 1;
+      }
+    });
   });
 
   const chartData = Object.entries(provinceStats)
     .map(([name, stats]) => ({
       name,
       เหตุการณ์: stats.count,
-      ผู้เสียชีวิต: stats.deaths
+      ผู้เสียชีวิต: stats.deaths,
+      ไม่ระบุจำนวน: stats.count - stats.known
     }))
     .sort((a, b) => b.เหตุการณ์ - a.เหตุการณ์)
     .slice(0, 10); // Top 10
 
   const CustomTooltip = ({ active, payload, label }: any) => {
     if (active && payload && payload.length) {
+      const row = payload[0].payload as (typeof chartData)[number];
       return (
         <div className="bg-white p-3 border border-slate-200 shadow-md rounded-xl text-sm">
           <p className="font-bold text-slate-800 mb-2">{label}</p>
           <div className="flex flex-col gap-1">
-             <p className="text-slate-600 text-xs"><span className="inline-block w-3 h-3 rounded-sm bg-slate-800 mr-2"></span> เหตุการณ์: <span className="font-bold">{payload[0].value}</span></p>
-             <p className="text-slate-600 text-xs"><span className="inline-block w-3 h-3 rounded-sm bg-red-500 mr-2"></span> ผู้เสียชีวิต: <span className="font-bold">{payload[1].value}</span></p>
+             <p className="text-slate-600 text-xs"><span className="inline-block w-3 h-3 rounded-sm bg-slate-800 mr-2"></span> เหตุการณ์: <span className="font-bold">{row.เหตุการณ์}</span></p>
+             <p className="text-slate-600 text-xs"><span className="inline-block w-3 h-3 rounded-sm bg-red-500 mr-2"></span> ผู้เสียชีวิต: <span className="font-bold">{row.ผู้เสียชีวิต}</span></p>
+             {row.ไม่ระบุจำนวน > 0 && (
+               <p className="text-slate-400 text-[11px] pt-1 border-t border-slate-100 mt-1">
+                 อีก {row.ไม่ระบุจำนวน} ข่าวไม่ระบุจำนวนผู้เสียชีวิต
+               </p>
+             )}
           </div>
         </div>
       );
@@ -73,7 +96,10 @@ export default function MapPage() {
               แผนที่ความเสี่ยง (Heatmap)
            </h3>
            <div className="flex gap-2">
-              <span className="text-[10px] font-bold text-slate-500 bg-slate-100 px-2 py-1 rounded">จาก {stories.length} ข่าวล่าสุด</span>
+              <span className="text-[10px] font-bold text-slate-500 bg-slate-100 px-2 py-1 rounded">
+                จาก {stories.length - aggregateStories} ข่าวล่าสุด
+                {aggregateStories > 0 && <> · ไม่รวมข่าวสรุปสถิติ {aggregateStories}</>}
+              </span>
            </div>
         </div>
         

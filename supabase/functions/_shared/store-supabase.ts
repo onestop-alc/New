@@ -8,6 +8,7 @@ import {
   RunInProgressError,
   UNIQUE_VIOLATION,
   type CandidateStory,
+  type PendingArticle,
   type Store
 } from './pipeline.ts';
 
@@ -64,6 +65,23 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
       const row = (Array.isArray(data) ? data[0] : data) as
         { story_id: number; inserted: boolean } | null;
       return { storyId: Number(row?.story_id ?? 0), inserted: Boolean(row?.inserted) };
+    },
+
+    async saveArticleFacts(url, facts) {
+      const { error } = await client.rpc('upsert_article_facts', {
+        p_url: url,
+        p_facts: facts
+      });
+      fail('saveArticleFacts', error);
+    },
+
+    async listPendingExtraction(limit) {
+      const { data, error } = await client.rpc('articles_pending_extraction', {
+        p_limit: limit
+      });
+      fail('listPendingExtraction', error);
+      return ((data ?? []) as Array<Omit<PendingArticle, 'published'> & { published: string }>)
+        .map(row => ({ ...row, published: new Date(row.published) }));
     },
 
     async startRun() {

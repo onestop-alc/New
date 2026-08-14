@@ -1,6 +1,25 @@
 import { stringSimilarity } from 'string-similarity-js';
 import { SYNONYMS, FILLER, PROVINCES, AREA_ALIASES, CONFIG } from './feeds.ts';
 
+// Casualty parsing lives in casualties.ts. Re-exported here so existing callers
+// keep working; new code should import readCasualties() directly.
+export {
+  readCasualties,
+  extractDeaths,
+  extractInjuries,
+  normalizeDigits,
+  parseThaiWordNumber,
+  CASUALTY_EXTRACTOR_VERSION
+} from './casualties.ts';
+export type {
+  CasualtyFact,
+  CasualtyReading,
+  CasualtyInput,
+  CasualtyField,
+  CasualtyScope,
+  Evidence
+} from './casualties.ts';
+
 export function normalizeTitle(title: string): string {
   let normalized = title;
 
@@ -23,57 +42,6 @@ export function normalizeTitle(title: string): string {
 export function extractTrgmKey(title: string): string {
   // Trgm key is simple normalization without symbols (letters and numbers only)
   return title.replace(/[^ก-๙a-zA-Z0-9]/g, '');
-}
-
-const THAI_NUMBER_WORDS = [
-  "หนึ่ง", "เอ็ด", "สอง", "ยี่", "สาม", "สี่", "ห้า", "หก", "เจ็ด", "แปด", "เก้า", "สิบ"
-] as const;
-
-const THAI_NUMBERS: Record<string, number> = {
-  "หนึ่ง": 1, "เอ็ด": 1, "สอง": 2, "ยี่": 2, "สาม": 3, "สี่": 4,
-  "ห้า": 5, "หก": 6, "เจ็ด": 7, "แปด": 8, "เก้า": 9, "สิบ": 10
-};
-
-/**
- * Casualty counts, e.g. "ดับ 2 ราย" / "ชนดับสองคน".
- * The Thai numeral alternation is explicit and followed by a negative
- * lookahead: a greedy [ก-๙]+ swallows the next word ("สองคน") and never
- * resolves. The regex is scanned globally so an early non-numeric match does
- * not shadow a later real one.
- */
-function extractCount(title: string, keywords: string[], modifiers: string[] = []): number | null {
-  // Optional modifier between the keyword and the number: "ดับคาที่ 3 ศพ".
-  const modifier = modifiers.length ? `(?:${modifiers.join('|')})?` : '';
-  const pattern = new RegExp(
-    `(?:${keywords.join('|')})${modifier}\\s*(\\d+|${THAI_NUMBER_WORDS.join('|')})(?![ก-๙])`,
-    'g'
-  );
-  for (const match of title.matchAll(pattern)) {
-    const value = match[1];
-    if (/^\d+$/.test(value)) return parseInt(value, 10);
-    if (THAI_NUMBERS[value]) return THAI_NUMBERS[value];
-  }
-  return null;
-}
-
-const DEATH_MODIFIERS = ['คาที่', 'สลด', 'อนาถ', 'ยกครัว', 'ทันที'];
-
-export function extractDeaths(title: string): number | null {
-  const count = extractCount(title, ['ดับ', 'เสียชีวิต', 'ตาย'], DEATH_MODIFIERS);
-  if (count !== null) return count;
-  // "ดับ 3 ศพ" is usually phrased with the count first: "... 3 ศพ".
-  const bodies = title.match(/(\d+)\s*ศพ(?![ก-๙])/);
-  if (bodies) return parseInt(bodies[1], 10);
-  // "ดับคาที่" / "ดับสลด" with no number at all implies a single fatality.
-  if (/ดับคาที่|ดับสลด|เสียชีวิตคาที่|ดับอนาถ/.test(title)) return 1;
-  return null;
-}
-
-export function extractInjuries(title: string): number | null {
-  const count = extractCount(title, ['บาดเจ็บ', 'สาหัส', 'เจ็บ'], ['สาหัส', 'หนัก']);
-  if (count !== null) return count;
-  if (/บาดเจ็บสาหัส|อาการสาหัส|โคม่า/.test(title)) return 1;
-  return null;
 }
 
 export function extractProvinces(text: string): string[] {
@@ -112,16 +80,31 @@ export function getVehicleSignature(title: string): string {
   return v.sort().join(',');
 }
 
-export function isSameStory(
-  titleA: string, titleB: string,
-  provincesA: string[], provincesB: string[],
-  deathsA: number | null, deathsB: number | null,
-  injuriesA: number | null, injuriesB: number | null
-): boolean {
-  const normA = normalizeTitle(titleA);
-  const normB = normalizeTitle(titleB);
-  
-  const similarity = stringSimilarity(normA, normB);
+export type CasualtyAgreement = 'agree' | 'unknown' | 'conflict';
+
+/**
+ * Absence of a figure is not evidence that two reports describe different
+ * events. Until the extractor rewrite both sides were almost always null, so
+ * the old `deathsA === deathsB` check was a veto that never actually fired;
+ * turning it on unchanged would have split every crash whose outlets disagreed
+ * on the toll.
+ */
+export function casualtyAgreement(a: number | null, b: number | null): CasualtyAgreement {
+  if (a === null || b === null) return 'unknown';
+  return a === b ? 'agree' : 'conflict';
+}
+
+export interface SameStoryInput {
+  title: string;
+  provinces: string[];
+  deaths: number | null;
+  injuries: number | null;
+  /** Used only to bound a conflicting-toll merge. */
+  published?: Date | null;
+}
+
+export function isSameStory(a: SameStoryInput, b: SameStoryInput): boolean {
+  const similarity = stringSimilarity(normalizeTitle(a.title), normalizeTitle(b.title));
   if (similarity < CONFIG.SIMILARITY_THRESHOLD) return false;
 
   // Thai DUI headlines are highly templated: the same sentence with a
@@ -129,17 +112,32 @@ export function isSameStory(
   // only in the arrest count score ~0.94. So the signature checks are
   // mandatory — text similarity alone never merges two stories.
   const provMatch =
-    provincesA.some(p => provincesB.includes(p)) ||
-    (provincesA.length === 0 && provincesB.length === 0);
+    a.provinces.some(p => b.provinces.includes(p)) ||
+    (a.provinces.length === 0 && b.provinces.length === 0);
   if (!provMatch) return false;
 
-  const deathMatch = deathsA === deathsB;
-  const injuryMatch = injuriesA === injuriesB || injuriesA === null || injuriesB === null;
-  if (!deathMatch || !injuryMatch) return false;
-
-  const vehicleA = getVehicleSignature(titleA);
-  const vehicleB = getVehicleSignature(titleB);
+  const vehicleA = getVehicleSignature(a.title);
+  const vehicleB = getVehicleSignature(b.title);
   const vehicleMatch = vehicleA === vehicleB && vehicleA !== '';
+  const strong = similarity >= CONFIG.STRONG_SIMILARITY;
 
-  return vehicleMatch || similarity >= CONFIG.STRONG_SIMILARITY;
+  const deaths = casualtyAgreement(a.deaths, b.deaths);
+  const injuries = casualtyAgreement(a.injuries, b.injuries);
+
+  if (deaths === 'conflict' || injuries === 'conflict') {
+    // A death toll rises as victims die, so two outlets reporting 2 and 3 on
+    // the same crash must still merge — but only on strong evidence, or the
+    // checkpoint round-ups the comment above is guarding would collapse too.
+    if (!strong || !vehicleMatch) return false;
+    if (!withinConflictWindow(a.published, b.published)) return false;
+    return true;
+  }
+
+  return vehicleMatch || strong;
+}
+
+function withinConflictWindow(a?: Date | null, b?: Date | null): boolean {
+  if (!a || !b) return true;
+  const hours = Math.abs(a.getTime() - b.getTime()) / 3_600_000;
+  return hours <= CONFIG.CASUALTY_CONFLICT_WINDOW_HOURS;
 }

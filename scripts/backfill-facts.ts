@@ -1,57 +1,24 @@
 /**
- * Recomputes deaths / injuries / provinces for stories already in the table,
- * using the current extractors. Run after changing the heuristics in dedup.ts:
- *   npx tsx scripts/backfill-facts.ts
+ * RETIRED — replaced by scripts/backfill-casualties.ts.
+ *
+ * This script recomputed deaths/injuries/provinces from stories.display_title
+ * alone and wrote them back unconditionally. Both halves are now wrong:
+ *
+ *  - Headline-only extraction is the bug the rewrite exists to fix. The figure
+ *    is frequently only in the summary or the body, especially when the
+ *    aggregator truncated the headline.
+ *  - The unconditional overwrite reverted every manual correction, because it
+ *    predates stories.casualties_locked.
+ *
+ * The replacement re-reads at the article level, honours casualties_locked, and
+ * derives the story figure from every member article via
+ * recompute_story_casualties().
  */
-import { Client } from 'pg';
-import dotenv from 'dotenv';
-import {
-  extractDeaths,
-  extractInjuries,
-  extractProvinces
-} from '../supabase/functions/_shared/dedup.ts';
-
-dotenv.config({ path: '.env.local' });
-dotenv.config();
-
-if (!process.env.DATABASE_URL) {
-  console.error('DATABASE_URL is not set');
-  process.exit(1);
-}
-
-const client = new Client({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
-});
-
-await client.connect();
-
-const { rows } = await client.query<{
-  id: string;
-  display_title: string;
-  deaths: number | null;
-  injuries: number | null;
-  provinces: string[] | null;
-}>('SELECT id, display_title, deaths, injuries, provinces FROM stories');
-
-let updated = 0;
-for (const story of rows) {
-  const deaths = extractDeaths(story.display_title);
-  const injuries = extractInjuries(story.display_title);
-  const provinces = extractProvinces(story.display_title);
-
-  const same =
-    deaths === story.deaths &&
-    injuries === story.injuries &&
-    JSON.stringify(provinces) === JSON.stringify(story.provinces ?? []);
-  if (same) continue;
-
-  await client.query(
-    'UPDATE stories SET deaths = $1, injuries = $2, provinces = $3::text[] WHERE id = $4',
-    [deaths, injuries, provinces, story.id]
-  );
-  updated++;
-}
-
-console.log(`Backfilled ${updated} of ${rows.length} stories.`);
-await client.end();
+console.error(
+  'scripts/backfill-facts.ts is retired — it reverts manual corrections and\n' +
+  'extracts from headlines only.\n\n' +
+  'Use instead:\n' +
+  '  npx tsx scripts/backfill-casualties.ts            # dry run\n' +
+  '  npx tsx scripts/backfill-casualties.ts --commit\n'
+);
+process.exit(1);

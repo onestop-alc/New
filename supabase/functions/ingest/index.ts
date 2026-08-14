@@ -8,12 +8,17 @@
  */
 import { runPipeline } from '../_shared/pipeline.ts';
 import { createSupabaseStore } from '../_shared/store-supabase.ts';
+import { buildIngestExtras } from '../_shared/runtime-config.ts';
 import { fetchAllFeeds, feedErrors } from './rss.ts';
 
 const TRIGGER_SECRET = Deno.env.get('INGEST_TRIGGER_SECRET');
 // SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY are injected by the platform.
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+
+// Built once per cold start: the body fetcher carries per-host rate-limit and
+// dead-host state that is worth keeping across invocations.
+const EXTRAS = buildIngestExtras(key => Deno.env.get(key));
 
 Deno.serve(async (req: Request) => {
   if (!TRIGGER_SECRET) {
@@ -32,7 +37,11 @@ Deno.serve(async (req: Request) => {
   const wait = url.searchParams.get('wait') === '1';
 
   const store = createSupabaseStore(SUPABASE_URL, SERVICE_ROLE_KEY);
-  const work = runPipeline({ store, fetchArticles: () => fetchAllFeeds({ seasonal }) });
+  const work = runPipeline({
+    store,
+    fetchArticles: () => fetchAllFeeds({ seasonal }),
+    ...EXTRAS
+  });
 
   if (wait) {
     try {

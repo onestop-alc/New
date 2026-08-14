@@ -14,6 +14,7 @@ import {
   DIRECT_FEEDS,
   CONFIG
 } from '../_shared/feeds.ts';
+import { stripHtml as toText } from '../_shared/article-text.ts';
 import type { ArticleInput } from '../_shared/pipeline.ts';
 
 const UA =
@@ -57,18 +58,9 @@ function linkOf(item: RawItem): string {
   return '';
 }
 
+/** One decoder for the whole project — see _shared/article-text.ts. */
 function stripHtml(html: string): string {
-  return html
-    .replace(/<[^>]*>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, CONFIG.MAX_SUMMARY_LENGTH);
+  return toText(html, CONFIG.MAX_SUMMARY_LENGTH);
 }
 
 function parseDate(item: RawItem): Date | null {

@@ -6,6 +6,7 @@ import {
   UNIQUE_VIOLATION,
   type CandidateStory,
   type IngestInput,
+  type PendingArticle,
   type Store
 } from '../../../supabase/functions/_shared/pipeline.ts';
 
@@ -54,7 +55,8 @@ function createPostgresStore(connectionString: string): Store {
 
     async findCandidates(trgmKey, windowStart) {
       const { rows } = await pool.query<CandidateStory>(
-        'SELECT id, display_title, provinces, deaths, injuries FROM find_candidate_stories($1, $2, $3)',
+        `SELECT id, display_title, provinces, deaths, injuries, last_published
+           FROM find_candidate_stories($1, $2, $3)`,
         [trgmKey, windowStart, CONFIG.SIMILARITY_THRESHOLD]
       );
       return rows;
@@ -67,6 +69,22 @@ function createPostgresStore(connectionString: string): Store {
         ingestArgs(input)
       );
       return { storyId: Number(rows[0].story_id), inserted: rows[0].inserted };
+    },
+
+    async saveArticleFacts(url, facts) {
+      await pool.query('SELECT upsert_article_facts($1, $2::jsonb)', [
+        url,
+        JSON.stringify(facts)
+      ]);
+    },
+
+    async listPendingExtraction(limit) {
+      const { rows } = await pool.query<PendingArticle>(
+        `SELECT id, url, title, summary, source, published
+           FROM articles_pending_extraction($1)`,
+        [limit]
+      );
+      return rows;
     },
 
     async startRun() {

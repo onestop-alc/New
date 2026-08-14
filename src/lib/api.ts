@@ -4,8 +4,16 @@ export interface Story {
   id: number;
   display_title: string;
   provinces: string[] | null;
+  /** null means the reports did not say. 0 means they said nobody died. */
   deaths: number | null;
   injuries: number | null;
+  deaths_confidence?: number | null;
+  injuries_confidence?: number | null;
+  /** regex | llm | manual — which extractor produced the figure on screen. */
+  deaths_source?: string | null;
+  injuries_source?: string | null;
+  /** statistics_roundup stories carry period totals, not one crash. */
+  content_type?: string | null;
   source_count: number | null;
   max_confidence: 'high' | 'medium' | null;
   first_published: string;
@@ -23,6 +31,69 @@ export function storyConfidence(story: Story): 'high' | 'medium' {
     : 'medium';
 }
 
+export type CasualtyState = 'fatal' | 'injury' | 'none' | 'unknown';
+
+/**
+ * "The reports did not say" and "the reports said nobody was hurt" are
+ * different facts. Rendering `deaths || 0` collapsed them, so every story the
+ * extractor could not read was published as a confident zero.
+ */
+export function casualtyState(
+  story: Pick<Story, 'deaths' | 'injuries'>
+): CasualtyState {
+  if ((story.deaths ?? 0) > 0) return 'fatal';
+  if ((story.injuries ?? 0) > 0) return 'injury';
+  if (story.deaths === 0 || story.injuries === 0) return 'none';
+  return 'unknown';
+}
+
+export function casualtyLabel(value: number | null | undefined): string {
+  return value === null || value === undefined ? 'ไม่ระบุ' : String(value);
+}
+
+/** Period and national totals must never be summed with individual crashes. */
+export function isAggregateStory(story: Pick<Story, 'content_type'>): boolean {
+  return story.content_type === 'statistics_roundup';
+}
+
+export interface CasualtyTotals {
+  deaths: number;
+  injuries: number;
+  /** Stories that stated a figure and are counted in the totals. */
+  counted: number;
+  /** Stories left out because no figure was reported. */
+  unknown: number;
+  /** Stories left out because they report a period or national total. */
+  aggregate: number;
+}
+
+/**
+ * Never imputes zero. A story with no reported figure is excluded and counted
+ * separately, so the headline number is "the toll across the stories that said"
+ * rather than a floor that looks like a fact.
+ */
+export function casualtyTotals(stories: Story[]): CasualtyTotals {
+  const totals: CasualtyTotals = {
+    deaths: 0, injuries: 0, counted: 0, unknown: 0, aggregate: 0
+  };
+
+  for (const story of stories) {
+    if (isAggregateStory(story)) {
+      totals.aggregate++;
+      continue;
+    }
+    if (story.deaths === null && story.injuries === null) {
+      totals.unknown++;
+      continue;
+    }
+    totals.deaths += story.deaths ?? 0;
+    totals.injuries += story.injuries ?? 0;
+    totals.counted++;
+  }
+
+  return totals;
+}
+
 export interface Article {
   id: number;
   source: string;
@@ -31,6 +102,12 @@ export interface Article {
   summary: string;
   published: string;
   confidence: string;
+  deaths?: number | null;
+  injuries?: number | null;
+  /** The span that evidences the figure — the audit trail shown on hover. */
+  casualty_snippet?: string | null;
+  casualty_scope?: string | null;
+  extractor?: string | null;
 }
 
 export type StoryWithArticles = Story & { articles: Article[] };
@@ -78,8 +155,10 @@ export async function fetchStories(limit = 100): Promise<Story[]> {
   // would otherwise sort below the limit and never reach the feed.
   const { data, error } = await supabase
     .from('stories')
+    // supabase-js derives the row type from this string literal — keep it one
+    // literal, not a concatenation, or the result degrades to GenericStringError.
     .select(
-      'id, display_title, provinces, deaths, injuries, source_count, max_confidence, first_published, last_published, created_at'
+      'id, display_title, provinces, deaths, injuries, deaths_confidence, injuries_confidence, deaths_source, injuries_source, content_type, source_count, max_confidence, first_published, last_published, created_at'
     )
     .order('last_published', { ascending: false })
     .order('created_at', { ascending: false })
@@ -103,9 +182,15 @@ export async function fetchStory(id: string): Promise<StoryWithArticles> {
   if (error) throw new Error(error.message);
   if (!story) throw new Error('ไม่พบข่าวนี้');
 
+  // Explicit column list, not '*': 0011 replaced the table-level grant on
+  // articles with a column-level one so extract_payload (raw model output)
+  // stays off the wire, and '*' now fails with 42501. A new column must be
+  // added to both the grant in 0011 and this list.
   const { data: articles, error: articlesError } = await supabase
     .from('articles')
-    .select('*')
+    .select(
+      'id, source, title, url, summary, published, confidence, deaths, injuries, casualty_snippet, casualty_scope, extractor'
+    )
     .eq('story_id', id)
     .order('published', { ascending: true });
 
