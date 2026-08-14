@@ -260,6 +260,18 @@ export const CONFIG = {
   /** Merge shortcut: near-identical titles from the same province. */
   STRONG_SIMILARITY: 0.85,
   DEDUP_WINDOW_DAYS: 3,
+  /**
+   * Follow-up coverage of one crash runs for weeks — bail hearing, charges,
+   * funeral — and the old 3-day candidate window meant those articles never
+   * even reached isSameStory(). One BMW/tuk-tuk crash became sixteen stories
+   * and its three deaths were counted sixteen times on the dashboard.
+   *
+   * Candidates are now fetched over this longer window; isSameStory() then
+   * requires corroboration (same toll AND same vehicle signature) for anything
+   * older than DEDUP_WINDOW_DAYS, so widening the net does not widen what
+   * actually merges.
+   */
+  DEDUP_FOLLOWUP_WINDOW_DAYS: 14,
   MAX_SUMMARY_LENGTH: 300,
   /**
    * Two outlets may disagree on the toll of the same crash while it develops.

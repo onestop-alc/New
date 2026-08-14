@@ -160,8 +160,10 @@ async function findMatchingStory(
   article: ArticleInput,
   facts: ArticleEnrichment
 ): Promise<number | null> {
+  // Fetch over the wider follow-up window; isSameStory() applies the stricter
+  // corroboration rule to anything beyond DEDUP_WINDOW_DAYS.
   const windowStart = new Date(
-    article.pubDate.getTime() - CONFIG.DEDUP_WINDOW_DAYS * 86_400_000
+    article.pubDate.getTime() - CONFIG.DEDUP_FOLLOWUP_WINDOW_DAYS * 86_400_000
   );
   const candidates = await store.findCandidates(facts.trgmKey, windowStart);
 

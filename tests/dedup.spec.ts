@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   casualtyAgreement,
+  getVehicleSignature,
   isSameStory,
   type SameStoryInput
 } from '../supabase/functions/_shared/dedup.ts';
@@ -31,6 +32,30 @@ describe('casualtyAgreement', () => {
     expect(casualtyAgreement(2, 3)).toBe('conflict');
     // 0 is a claim, not an absence.
     expect(casualtyAgreement(0, 1)).toBe('conflict');
+  });
+});
+
+describe('getVehicleSignature', () => {
+  it('recognises the marque names Thai headlines actually use', () => {
+    // An empty signature is what let one crash become sixteen stories.
+    expect(getVehicleSignature('หนุ่มเมาขับ BMW ชนรถตุ๊กตุ๊ก')).toBe('3W,4W-C');
+    expect(getVehicleSignature('บีเอ็มเมาขับ ชนตุ๊กตุ๊ก')).toBe('3W,4W-C');
+    expect(getVehicleSignature('เก๋งหรูพุ่งชนสามล้อเครื่อง')).toBe('3W,4W-C');
+  });
+
+  it('does not class a motorcycle as a bicycle', () => {
+    // 'จักรยานยนต์' contains 'จักรยาน'.
+    expect(getVehicleSignature('เมาขับชนจักรยานยนต์')).toBe('2W');
+    expect(getVehicleSignature('เมาขับชนจักรยาน')).toBe('Bike');
+    expect(getVehicleSignature('เก๋งชนจักรยานยนต์และจักรยาน')).toBe('2W,4W-C,Bike');
+  });
+
+  it('returns an empty signature when no vehicle is named', () => {
+    expect(getVehicleSignature('เมาแล้วขับ โทษปรับสูงสุดเท่าไร')).toBe('');
+  });
+
+  it('is order-independent so two wordings produce the same key', () => {
+    expect(getVehicleSignature('กระบะชน จยย.')).toBe(getVehicleSignature('จยย.ถูกกระบะชน'));
   });
 });
 
@@ -110,6 +135,53 @@ describe('isSameStory', () => {
     const b = story({
       title: 'เปิดกฎหมายเมาแล้วขับ โทษปรับสูงสุดเท่าไร', provinces: ['ตาก'], deaths: null
     });
+    expect(isSameStory(a, b)).toBe(false);
+  });
+
+  it('merges follow-up coverage when the toll and the vehicles corroborate', () => {
+    // Real headlines, 3 days apart. Wording has nothing in common beyond the
+    // crash itself, so similarity never reaches STRONG_SIMILARITY.
+    const a = story({
+      title: 'หนุ่มเมาขับ BMW ชนประสานงา รถตุ๊กตุ๊ก เสียชีวิตสลด 3 ราย',
+      provinces: ['นนทบุรี'], deaths: 3, published: BASE
+    });
+    const b = story({
+      title: 'ศาลให้ประกัน “หนุ่มบีเอ็มเมาขับ” ชนรถตุ๊กตุ๊ก ดับ 3 ศพ วงเงิน 5 แสน',
+      provinces: [], deaths: 3, published: hoursLater(72)
+    });
+    expect(isSameStory(a, b)).toBe(true);
+  });
+
+  it('refuses follow-up coverage when the toll does not corroborate', () => {
+    const a = story({
+      title: 'หนุ่มเมาขับ BMW ชนประสานงา รถตุ๊กตุ๊ก เสียชีวิตสลด 3 ราย',
+      provinces: ['นนทบุรี'], deaths: 3, published: BASE
+    });
+    // Same vehicles, same province, but nobody stated a toll on the other side.
+    const b = story({
+      title: 'หนุ่มเมาขับ BMW ชนรถตุ๊กตุ๊ก คดีถึงที่สุด',
+      provinces: ['นนทบุรี'], deaths: null, published: hoursLater(24 * 10)
+    });
+    expect(isSameStory(a, b)).toBe(false);
+  });
+
+  it('does not merge two different crashes that merely share a toll', () => {
+    // Same vehicles and same figure, but each names a different province.
+    const a = story({
+      title: 'เมาขับเก๋งชน จยย. ดับ 2 ราย', provinces: ['ขอนแก่น'], deaths: 2
+    });
+    const b = story({
+      title: 'เมาขับเก๋งชน จยย. ดับ 2 ราย', provinces: ['ภูเก็ต'], deaths: 2,
+      published: hoursLater(24 * 9)
+    });
+    expect(isSameStory(a, b)).toBe(false);
+  });
+
+  it('needs more than an unnamed province to merge', () => {
+    // No province either side, no toll, no shared vehicle: silence is not
+    // evidence of sameness.
+    const a = story({ title: 'เมาแล้วขับชนแล้วหลบหนี ตำรวจเร่งล่า', provinces: [] });
+    const b = story({ title: 'เมาแล้วขับชนแล้วหนี ตำรวจตามล่าตัว', provinces: [] });
     expect(isSameStory(a, b)).toBe(false);
   });
 
