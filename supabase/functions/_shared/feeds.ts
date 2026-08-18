@@ -183,22 +183,113 @@ export const SOFT_SOURCE_BLOCK = [
 /** Non-Thai outlets machine-translated into Thai. */
 export const HARD_SOURCE_BLOCK = ["vietnam.vn"];
 
-export const SYNONYMS: Record<string, string> = {
-  "จยย.": "②",
-  "จักรยานยนต์": "②",
-  "มอเตอร์ไซค์": "②",
-  "รถเก๋ง": "③",
-  "เก๋ง": "③",
-  "กระบะ": "④",
-  "ปิกอัพ": "④",
-  "ดับ": "⑧",
-  "เสียชีวิต": "⑧",
-  "ตาย": "⑧",
-  "ตายคาที่": "⑧",
-  "สาหัส": "⑨",
-  "บาดเจ็บ": "⑨",
-  "เจ็บ": "⑨"
+// ---------------------------------------------------------------------------
+// Vehicle lexicon.
+//
+// This used to be two lists that drifted apart: SYNONYMS (read by
+// normalizeTitle) knew จยย./เก๋ง/กระบะ, while VEHICLE_CLASSES (read by
+// getVehicleSignature, and living in dedup.ts) knew BMW and ตุ๊กตุ๊ก. A
+// headline about a BMW hitting a tuk-tuk therefore produced a usable vehicle
+// signature but a *low* title similarity, and the pair was rejected before the
+// signature was ever consulted. One list now feeds both.
+// ---------------------------------------------------------------------------
+
+/**
+ * Marque names. Thai headlines name the brand far more often than the body
+ * style — "หนุ่มบีเอ็มเมาขับ", never "ชายขับรถยนต์นั่งส่วนบุคคล" — which makes a
+ * marque one of the few genuinely rare things a headline reliably contains.
+ * `car` marks the marques that also imply a passenger car; ฮอนด้า and ยามาฮ่า
+ * do not, because in Thailand they are on more motorcycles than cars.
+ */
+export const VEHICLE_MARQUES: Array<{ code: string; terms: string[]; car: boolean }> = [
+  { code: 'bmw', terms: ['bmw', 'บีเอ็ม', 'บีเอ็มดับเบิลยู'], car: true },
+  { code: 'benz', terms: ['benz', 'เบนซ์', 'เมอร์เซเดส'], car: true },
+  { code: 'porsche', terms: ['porsche', 'ปอร์เช่'], car: true },
+  { code: 'ferrari', terms: ['ferrari', 'เฟอร์รารี'], car: true },
+  { code: 'lamborghini', terms: ['lamborghini', 'ลัมโบร์กินี'], car: true },
+  { code: 'tesla', terms: ['tesla', 'เทสลา'], car: true },
+  { code: 'audi', terms: ['audi', 'อาวดี้'], car: true },
+  { code: 'volvo', terms: ['volvo', 'วอลโว่'], car: true },
+  { code: 'toyota', terms: ['toyota', 'โตโยต้า'], car: false },
+  { code: 'honda', terms: ['honda', 'ฮอนด้า'], car: false },
+  { code: 'isuzu', terms: ['isuzu', 'อีซูซุ'], car: false },
+  { code: 'yamaha', terms: ['yamaha', 'ยามาฮ่า'], car: false }
+];
+
+const CAR_MARQUE_TERMS = VEHICLE_MARQUES.filter(m => m.car).flatMap(m => m.terms);
+
+/**
+ * Vehicle classes, used as a merge signature.
+ *
+ * The list was too short to be useful: a BMW hitting a tuk-tuk produced an
+ * empty signature, so sixteen separate stories about one crash never merged and
+ * the dashboard counted its three deaths sixteen times.
+ */
+export const VEHICLE_CLASSES: Array<{ code: string; terms: string[] }> = [
+  // 'จักรยานยนต์' is listed for normalizeTitle's benefit. The signature scan
+  // in entities.ts masks it out first, because it contains 'จักรยาน' and a
+  // motorcycle must never also be classed as a bicycle.
+  { code: '2W', terms: ['จยย.', 'มอเตอร์ไซค์', 'บิ๊กไบก์', 'บิ๊กไบค์', 'จักรยานยนต์'] },
+  { code: '3W', terms: ['ตุ๊กตุ๊ก', 'สามล้อ', 'สกายแล็บ', 'ซาเล้ง'] },
+  { code: '4W-C', terms: ['เก๋ง', 'รถหรู', ...CAR_MARQUE_TERMS] },
+  { code: '4W-P', terms: ['กระบะ', 'ปิกอัพ'] },
+  { code: 'Truck', terms: ['บรรทุก', 'สิบล้อ', 'หกล้อ', 'พ่วง', 'เทรลเลอร์', 'คอนเทนเนอร์'] },
+  // Bare 'ตู้' also matches ตู้เย็น / ตู้เอทีเอ็ม / ตู้คอนเทนเนอร์.
+  { code: 'Van', terms: ['รถตู้'] },
+  { code: 'Bus', terms: ['รถบัส', 'รถทัวร์', 'รถโดยสาร', 'สองแถว'] },
+  { code: 'Bike', terms: ['จักรยาน'] }
+];
+
+/** One symbol per vehicle class, so normalizeTitle collapses every wording. */
+const VEHICLE_SYMBOLS: Record<string, string> = {
+  '2W': '②',
+  '3W': '③',
+  '4W-C': '④',
+  '4W-P': '⑤',
+  Truck: '⑥',
+  Van: '⑦',
+  Bus: '⑩',
+  Bike: '⑪'
 };
+
+/** Outcome words, collapsed so "ดับ 3 ศพ" and "เสียชีวิต 3 ราย" look alike. */
+const OUTCOME_SYNONYMS: Array<[string, string]> = [
+  ['ดับ', '⑧'],
+  ['เสียชีวิต', '⑧'],
+  ['ตาย', '⑧'],
+  ['ตายคาที่', '⑧'],
+  ['ศพ', '⑧'],
+  ['สาหัส', '⑨'],
+  ['บาดเจ็บ', '⑨'],
+  ['เจ็บ', '⑨']
+];
+
+function buildSynonyms(): Record<string, string> {
+  const pairs: Array<[string, string]> = [];
+
+  for (const { code, terms } of VEHICLE_CLASSES) {
+    for (const term of terms) {
+      pairs.push([term, VEHICLE_SYMBOLS[code]]);
+      // Marque terms are stored lowercase for getVehicleSignature, which
+      // lowercases its input. normalizeTitle must not lowercase — it would
+      // destroy nothing useful but the Thai text is unaffected either way, so
+      // the cheaper fix is to list the casings a headline actually uses.
+      if (/^[a-z]+$/.test(term)) {
+        pairs.push([term.toUpperCase(), VEHICLE_SYMBOLS[code]]);
+        pairs.push([term[0].toUpperCase() + term.slice(1), VEHICLE_SYMBOLS[code]]);
+      }
+    }
+  }
+
+  pairs.push(...OUTCOME_SYNONYMS);
+
+  // Longest key first: 'จักรยานยนต์' contains 'จักรยาน', and replacing the
+  // bicycle first would turn every motorcycle into "⑪ยนต์".
+  pairs.sort((a, b) => b[0].length - a[0].length);
+  return Object.fromEntries(pairs);
+}
+
+export const SYNONYMS: Record<string, string> = buildSynonyms();
 
 export const FILLER = [
   "ที่", "ใน", "และ", "หรือ", "ของ", "กับ", "มี", "การ", "ความ"
@@ -260,6 +351,21 @@ export const CONFIG = {
   /** Merge shortcut: near-identical titles from the same province. */
   STRONG_SIMILARITY: 0.85,
   DEDUP_WINDOW_DAYS: 3,
+  /**
+   * Entity overlap (see entities.ts) that stands in for text similarity when a
+   * headline was rewritten from scratch. 4 is one rare entity plus corroborating
+   * context — a landmark and a matching toll, or an office and a province and a
+   * shared description — and never reachable by generic entities alone, since
+   * isSameStory() additionally requires at least one shared rare entity.
+   */
+  ENTITY_MERGE_SCORE: 4,
+  /**
+   * The near-duplicate path: wording that is close but under STRONG_SIMILARITY
+   * (0.77-0.83 in the pairs this was tuned against) needs far less corroboration
+   * than a full rewrite, but still one rare entity.
+   */
+  ENTITY_NEAR_DUP_SIMILARITY: 0.72,
+  ENTITY_NEAR_DUP_SCORE: 2,
   /**
    * Follow-up coverage of one crash runs for weeks — bail hearing, charges,
    * funeral — and the old 3-day candidate window meant those articles never

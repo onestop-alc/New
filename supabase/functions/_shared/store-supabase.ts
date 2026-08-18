@@ -31,11 +31,13 @@ export function createSupabaseStore(url: string, serviceRoleKey: string): Store 
       return new Set((data ?? []) as string[]);
     },
 
-    async findCandidates(trgmKey, windowStart) {
+    async findCandidates(trgmKey, windowStart, provinces) {
       const { data, error } = await client.rpc('find_candidate_stories', {
         search_key: trgmKey,
         window_start: windowStart.toISOString(),
-        threshold: CONFIG.SIMILARITY_THRESHOLD
+        threshold: CONFIG.SIMILARITY_THRESHOLD,
+        // null, not [], so the SQL keeps its trigram-only path.
+        search_provinces: provinces.length > 0 ? provinces : null
       });
       fail('findCandidates', error);
       return (data ?? []) as CandidateStory[];

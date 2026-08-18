@@ -18,6 +18,7 @@
 import { Client } from 'pg';
 import dotenv from 'dotenv';
 import { isSameStory, type SameStoryInput } from '../supabase/functions/_shared/dedup.ts';
+import { extractEntities, entityScore } from '../supabase/functions/_shared/entities.ts';
 import { CONFIG } from '../supabase/functions/_shared/feeds.ts';
 
 dotenv.config({ path: '.env.local' });
@@ -97,6 +98,13 @@ for (const group of toMerge) {
   console.log(`parent ${parent.id} (+${children.length})  deaths=${parent.deaths ?? '?'}`);
   for (const n of group) {
     console.log(`   ${n.id === parent.id ? '*' : ' '} ${n.id.padStart(4)} ${n.title.slice(0, 64)}`);
+    // Why this member joined: without it a dry run shows a grouping but no
+    // grounds for it, and a wrong group is the one failure worth catching by
+    // eye before --commit.
+    if (n.id !== parent.id) {
+      const overlap = entityScore(extractEntities(parent), extractEntities(n));
+      console.log(`        shared: ${overlap.shared.join(' ') || '(text similarity only)'}`);
+    }
   }
   console.log('');
 }

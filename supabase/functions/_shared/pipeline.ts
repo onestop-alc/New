@@ -93,7 +93,15 @@ export interface Store {
   readonly kind: 'postgres' | 'supabase';
   /** Returns only the URLs not already stored — one round trip for the batch. */
   filterNewUrls(urls: string[]): Promise<Set<string>>;
-  findCandidates(trgmKey: string, windowStart: Date): Promise<CandidateStory[]>;
+  /**
+   * `provinces` is a second way into the window: a rewritten headline can score
+   * under the trigram threshold and would otherwise never be compared at all.
+   */
+  findCandidates(
+    trgmKey: string,
+    windowStart: Date,
+    provinces: string[]
+  ): Promise<CandidateStory[]>;
   /**
    * Atomic + idempotent (see ingest_article()). `inserted` is false when the
    * article was already stored, possibly under a different URL.
@@ -165,7 +173,7 @@ async function findMatchingStory(
   const windowStart = new Date(
     article.pubDate.getTime() - CONFIG.DEDUP_FOLLOWUP_WINDOW_DAYS * 86_400_000
   );
-  const candidates = await store.findCandidates(facts.trgmKey, windowStart);
+  const candidates = await store.findCandidates(facts.trgmKey, windowStart, facts.provinces);
 
   const match = candidates.find(candidate =>
     isSameStory(

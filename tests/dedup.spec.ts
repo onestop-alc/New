@@ -152,15 +152,32 @@ describe('isSameStory', () => {
     expect(isSameStory(a, b)).toBe(true);
   });
 
-  it('refuses follow-up coverage when the toll does not corroborate', () => {
+  it('merges late follow-up on a marque even when the toll is missing', () => {
+    // Previously refused: with no toll on the second side there was nothing to
+    // corroborate, and beyond DEDUP_WINDOW_DAYS corroboration was the only path.
+    // The shared marque is now the evidence — a second BMW/tuk-tuk crash in
+    // Nonthaburi inside a fortnight is not a case worth protecting against.
     const a = story({
       title: 'หนุ่มเมาขับ BMW ชนประสานงา รถตุ๊กตุ๊ก เสียชีวิตสลด 3 ราย',
       provinces: ['นนทบุรี'], deaths: 3, published: BASE
     });
-    // Same vehicles, same province, but nobody stated a toll on the other side.
     const b = story({
       title: 'หนุ่มเมาขับ BMW ชนรถตุ๊กตุ๊ก คดีถึงที่สุด',
       provinces: ['นนทบุรี'], deaths: null, published: hoursLater(24 * 10)
+    });
+    expect(isSameStory(a, b)).toBe(true);
+  });
+
+  it('refuses late follow-up that shares nothing rare', () => {
+    // What the case above was really guarding: same province, same vehicle
+    // types, no toll either side, ten days apart. Everything shared is generic,
+    // so there is no reason to think it is one crash rather than two.
+    const a = story({
+      title: 'เมาแล้วขับ เก๋งชน จยย. ดับคาที่', provinces: ['ขอนแก่น'], published: BASE
+    });
+    const b = story({
+      title: 'เมาแล้วขับ เก๋งเสยท้าย จยย. เจ็บหนัก',
+      provinces: ['ขอนแก่น'], published: hoursLater(24 * 10)
     });
     expect(isSameStory(a, b)).toBe(false);
   });

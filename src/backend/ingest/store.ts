@@ -53,11 +53,12 @@ function createPostgresStore(connectionString: string): Store {
       return new Set(rows.map(row => row.filter_new_urls));
     },
 
-    async findCandidates(trgmKey, windowStart) {
+    async findCandidates(trgmKey, windowStart, provinces) {
       const { rows } = await pool.query<CandidateStory>(
         `SELECT id, display_title, provinces, deaths, injuries, last_published
-           FROM find_candidate_stories($1, $2, $3)`,
-        [trgmKey, windowStart, CONFIG.SIMILARITY_THRESHOLD]
+           FROM find_candidate_stories($1, $2, $3, $4::text[])`,
+        // null, not [], so the SQL keeps its trigram-only path.
+        [trgmKey, windowStart, CONFIG.SIMILARITY_THRESHOLD, provinces.length > 0 ? provinces : null]
       );
       return rows;
     },

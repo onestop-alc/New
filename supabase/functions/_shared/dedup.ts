@@ -1,5 +1,6 @@
 import { stringSimilarity } from 'string-similarity-js';
 import { SYNONYMS, FILLER, PROVINCES, AREA_ALIASES, CONFIG } from './feeds.ts';
+import { extractEntities, entityScore, vehicleClasses } from './entities.ts';
 
 // Casualty parsing lives in casualties.ts. Re-exported here so existing callers
 // keep working; new code should import readCasualties() directly.
@@ -69,45 +70,8 @@ export function extractProvinces(text: string): string[] {
   return Array.from(found);
 }
 
-/**
- * Vehicle classes, used as a merge signature.
- *
- * The list was too short to be useful: a BMW hitting a tuk-tuk produced an
- * empty signature, so sixteen separate stories about one crash never merged and
- * the dashboard counted its three deaths sixteen times. Marque names appear in
- * Thai headlines far more often than the word เก๋ง, so they are included.
- */
-const VEHICLE_CLASSES: Array<{ code: string; terms: string[] }> = [
-  // 'จักรยานยนต์' is handled by the mask below, not here.
-  { code: '2W', terms: ['จยย.', 'มอเตอร์ไซค์', 'บิ๊กไบก์'] },
-  { code: '3W', terms: ['ตุ๊กตุ๊ก', 'สามล้อ', 'สกายแล็บ', 'ซาเล้ง'] },
-  {
-    code: '4W-C',
-    terms: ['เก๋ง', 'บีเอ็ม', 'bmw', 'เบนซ์', 'benz', 'ปอร์เช่', 'porsche', 'เฟอร์รารี']
-  },
-  { code: '4W-P', terms: ['กระบะ', 'ปิกอัพ'] },
-  { code: 'Truck', terms: ['บรรทุก', 'สิบล้อ', 'หกล้อ', 'พ่วง', 'เทรลเลอร์', 'คอนเทนเนอร์'] },
-  // Bare 'ตู้' also matches ตู้เย็น / ตู้เอทีเอ็ม / ตู้คอนเทนเนอร์.
-  { code: 'Van', terms: ['รถตู้'] },
-  { code: 'Bus', terms: ['รถบัส', 'รถทัวร์', 'รถโดยสาร', 'สองแถว'] },
-  { code: 'Bike', terms: ['จักรยาน'] }
-];
-
-/** Sentinel that cannot occur in a headline; a space would match every title. */
-const MOTORCYCLE_MASK = '\u0000';
-
 export function getVehicleSignature(title: string): string {
-  // 'จักรยานยนต์' contains 'จักรยาน', so a motorcycle would otherwise also be
-  // classed as a bicycle and never match another report of the same crash.
-  const text = title.toLowerCase().split('จักรยานยนต์').join(MOTORCYCLE_MASK);
-  const found = new Set<string>();
-
-  for (const { code, terms } of VEHICLE_CLASSES) {
-    if (terms.some(term => text.includes(term))) found.add(code);
-  }
-  if (text.includes(MOTORCYCLE_MASK)) found.add('2W');
-
-  return Array.from(found).sort().join(',');
+  return vehicleClasses(title).join(',');
 }
 
 export type CasualtyAgreement = 'agree' | 'unknown' | 'conflict';
@@ -152,51 +116,73 @@ function daysApart(a?: Date | null, b?: Date | null): number {
 }
 
 export function isSameStory(a: SameStoryInput, b: SameStoryInput): boolean {
-  const similarity = stringSimilarity(normalizeTitle(a.title), normalizeTitle(b.title));
-  if (similarity < CONFIG.SIMILARITY_THRESHOLD) return false;
-
-  // Thai DUI headlines are highly templated: the same sentence with a
-  // different province scores ~0.89, and two checkpoint round-ups differing
-  // only in the arrest count score ~0.94. So the signature checks are
-  // mandatory — text similarity alone never merges two stories.
+  // Two named provinces that never intersect is the one veto outranking every
+  // signal below, so it is checked before anything is computed.
   const provinces = provinceAgreement(a.provinces, b.provinces);
   if (provinces === 'conflict') return false;
 
+  const deaths = casualtyAgreement(a.deaths, b.deaths);
+  const injuries = casualtyAgreement(a.injuries, b.injuries);
+
+  const similarity = stringSimilarity(normalizeTitle(a.title), normalizeTitle(b.title));
   const vehicleA = getVehicleSignature(a.title);
   const vehicleB = getVehicleSignature(b.title);
   const vehicleMatch = vehicleA === vehicleB && vehicleA !== '';
   const strong = similarity >= CONFIG.STRONG_SIMILARITY;
 
-  const deaths = casualtyAgreement(a.deaths, b.deaths);
-  const injuries = casualtyAgreement(a.injuries, b.injuries);
-
   if (deaths === 'conflict' || injuries === 'conflict') {
     // A death toll rises as victims die, so two outlets reporting 2 and 3 on
     // the same crash must still merge — but only on strong evidence, or the
-    // checkpoint round-ups the comment above is guarding would collapse too.
+    // checkpoint round-ups guarded against below would collapse too.
     if (!strong || !vehicleMatch) return false;
     return daysApart(a.published, b.published) * 24 <= CONFIG.CASUALTY_CONFLICT_WINDOW_HOURS;
   }
 
   /**
+   * Thai DUI headlines are highly templated: the same sentence with a different
+   * province scores ~0.89, and two checkpoint round-ups differing only in the
+   * arrest count score ~0.94. Text similarity alone therefore never merges two
+   * stories — every path below needs a signature, a corroborating toll, or a
+   * shared entity.
+   *
+   * The entity paths are what reach coverage that was rewritten from scratch,
+   * where similarity is not merely weak but near zero: "ดับ 3 ศพ! เก๋งหรู
+   * พุ่งชนสามล้อ" and "เปิดวงจรปิด...บีเอ็มชนตุ๊กตุ๊ก" are one crash and share
+   * three trigrams. Both demand a *rare* shared entity — a landmark, an age, a
+   * marque, a name, an office — because score alone is reachable by two
+   * different crashes in one province on one night.
+   */
+  const overlap = entityScore(extractEntities(a), extractEntities(b));
+  const entityMatch = overlap.rare >= 1 && overlap.score >= CONFIG.ENTITY_MERGE_SCORE;
+  const nearDuplicate =
+    overlap.rare >= 1 &&
+    overlap.score >= CONFIG.ENTITY_NEAR_DUP_SCORE &&
+    similarity >= CONFIG.ENTITY_NEAR_DUP_SIMILARITY;
+
+  // Below the threshold the two headlines share almost no wording. That is the
+  // case entityMatch exists for, and it is the only path allowed to cross it.
+  if (similarity < CONFIG.SIMILARITY_THRESHOLD) return entityMatch;
+
+  /**
    * Follow-up coverage rewords the headline completely — "ศาลให้ประกัน…",
    * "ญาติเชิญดวงวิญญาณ…", "แจ้งข้อหาหนัก…" — so similarity never approaches
    * STRONG_SIMILARITY. Two independent reports stating the SAME toll for the
-   * SAME vehicle types is the substitute. That was not usable evidence before
-   * the extractor rewrite, when both sides were almost always null.
+   * SAME vehicle types is the substitute.
    */
   const corroborated = deaths === 'agree' && a.deaths !== null && vehicleMatch;
 
   // Beyond the normal window the pair is follow-up coverage of an older event,
   // where wording has drifted and the risk of colliding with a different crash
-  // is higher. Only corroboration is accepted there.
+  // is higher. Only the two paths that require hard evidence are accepted.
   if (daysApart(a.published, b.published) > CONFIG.DEDUP_WINDOW_DAYS) {
-    return corroborated;
+    return corroborated || entityMatch;
   }
 
   // An unnamed province is not evidence of sameness either, so it still needs
   // something concrete to stand on.
-  if (provinces === 'unknown') return corroborated || strong;
+  if (provinces === 'unknown') {
+    return corroborated || strong || entityMatch || nearDuplicate;
+  }
 
-  return vehicleMatch || strong;
+  return vehicleMatch || strong || entityMatch || nearDuplicate;
 }
